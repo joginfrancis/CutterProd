@@ -20,21 +20,6 @@ export class MachineConnection {
         this.connected = false;
         this.callbacks = callbacks || {};
         this.keepReading = true;
-        this.listeners = [];
-    }
-
-    /**
-     * Registers a callback listener to receive raw incoming messages.
-     */
-    addMessageListener(fn) {
-        this.listeners.push(fn);
-    }
-
-    /**
-     * Unregisters a previously registered message listener.
-     */
-    removeMessageListener(fn) {
-        this.listeners = this.listeners.filter(l => l !== fn);
     }
 
     /**
@@ -45,7 +30,17 @@ export class MachineConnection {
         if (this.connected) return;
 
         if (!('serial' in navigator)) {
-            log('Web Serial API not supported in this browser. Please use Chrome/Edge.', 'error');
+            let errorMsg = 'Web Serial API not supported in this browser.';
+            
+            if (window.location.protocol === 'file:') {
+                errorMsg += ' (Web Serial requires a web server; it cannot run from a local file. Use "python3 -m http.server" on your Pi)';
+            } else if (window.location.hostname !== 'localhost' && window.location.protocol !== 'https:') {
+                errorMsg += ' (Web Serial requires HTTPS or localhost for security)';
+            } else {
+                errorMsg += ' Please use Chromium or Edge and check chrome://flags/#enable-experimental-web-platform-features';
+            }
+            
+            log(errorMsg, 'error');
             return;
         }
 
@@ -131,15 +126,6 @@ export class MachineConnection {
      */
     handleMessage(msg) {
         if (!msg) return;
-
-        // Notify all registered custom message listeners
-        this.listeners.forEach(fn => {
-            try {
-                fn(msg);
-            } catch (e) {
-                console.error('Error in message listener:', e);
-            }
-        });
 
         if (msg.toLowerCase() === 'ok' || msg.toLowerCase() === 'ack') {
             log(`PICO: ${msg}`, 'success'); // Standard acknowledgment, ready for next command

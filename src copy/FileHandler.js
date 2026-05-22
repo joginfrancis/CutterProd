@@ -86,8 +86,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab) {
             // 3. Determine Dimensions (Complex!)
             // SVGs can use mm, cm, in, px, or no units at all.
             // We try to find the "Real World" size of the drawing.
-            const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 960;
-            const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770;
+            const bedW = 230;
+            const bedH = 310;
             let w_mm = 0, h_mm = 0;
             let viewbox = [0, 0, 0, 0];
 

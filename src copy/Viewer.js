@@ -47,8 +47,8 @@
  * @param {string} canvasId - HTML ID of the <canvas> element.
  * @param {string} containerId - HTML ID of the parent div (for sizing).
  */
-export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canvasContainer', stepsPerMM = 1.0, activePathIndex = -1) {
-    console.log("Viewer: Rendering G-Code with Sampling Points (v3)"); // Debug log to confirm update
+export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canvasContainer', stepsPerMM = 1.0) {
+    console.log("Viewer: Rendering G-Code with Sampling Points (v2)"); // Debug log to confirm update
     const canvas = document.getElementById(canvasId);
     const container = document.getElementById(containerId);
     if (!canvas || !container) return;
@@ -56,10 +56,8 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
     const ctx = canvas.getContext('2d');
 
     // --- 1. Setup Dimensions ---
-    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 960; // Machine Width (mm)
-    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770; // Machine Height (mm)
-    const gantryW = parseFloat(document.getElementById('gantryWidthInput')?.value) || 210; // Gantry Width (mm)
-    const gantryH = parseFloat(document.getElementById('gantryHeightInput')?.value) || 180; // Gantry Height (mm)
+    const bedW = 230; // Machine Width (mm)
+    const bedH = 310; // Machine Height (mm)
 
     // Make the canvas match the size of its container div
     const rect = container.getBoundingClientRect();
@@ -229,9 +227,10 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
     ctx.fillText(`${bedW}x${bedH}mm`, mapX(bedW), mapY(bedH) - 5); // Label Size
 
     // Draw The Path
+    ctx.lineWidth = 2;
     ctx.lineCap = 'round';
 
-    paths.forEach((p, idx) => {
+    paths.forEach(p => {
         const startX = mapX(p.from.x);
         const startY = mapY(p.from.y);
         const endX = mapX(p.to.x);
@@ -241,70 +240,26 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
         ctx.moveTo(startX, startY);
         ctx.lineTo(endX, endY);
         
-        const isExecuted = activePathIndex >= 0 && idx <= activePathIndex;
-        
         if (p.type === 'move') {
-            // G0: Rapid Move (Pen Up) -> Grey/Light Blue Dashed Line
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = isExecuted ? 'rgba(59, 130, 246, 0.45)' : '#d1d5db'; 
+            // G0: Rapid Move (Pen Up) -> Grey Dashed Line
+            ctx.strokeStyle = '#d1d5db'; 
             ctx.setLineDash([5, 5]);
             ctx.stroke();
         } else {
-            // G1: Cut Move (Pen Down) -> Emerald Green if executed, blue if pending
-            ctx.strokeStyle = isExecuted ? '#10b981' : '#3b82f6'; 
-            ctx.lineWidth = isExecuted ? 3 : 2;
+            // G1: Cut Move (Pen Down) -> Blue Solid Line
+            ctx.strokeStyle = '#3b82f6'; 
             ctx.setLineDash([]);
             ctx.stroke();
 
             // VISUALIZE SAMPLING POINTS
-            // Color: Bright Emerald Green if executed, Orange if pending
-            ctx.fillStyle = isExecuted ? '#10b981' : '#ff6600'; 
+            // Draw a small dot at the end of every cut segment
+            // Color: Bright Orange, Opaque
+            ctx.fillStyle = '#ff6600'; 
             ctx.beginPath();
-            ctx.arc(endX, endY, isExecuted ? 2.0 : 3.0, 0, 2 * Math.PI);
+            ctx.arc(endX, endY, 3.0, 0, 2 * Math.PI); // Large 3px radius (6px wide)
             ctx.fill();
         }
     });
-
-    // Draw Gantry Footprint
-    if (paths.length > 0) {
-        // Gantry is centered on the current tool position (cur) or the active path position
-        let gantryCenter = cur;
-        if (activePathIndex >= 0 && activePathIndex < paths.length) {
-            gantryCenter = paths[activePathIndex].to;
-        }
-
-        const gantryX = gantryCenter.x - gantryW / 2;
-        const gantryY = gantryCenter.y + gantryH / 2; // Top-Left of gantry in machine space (since Y is up, top is gantryCenter.y + height/2)
-
-        ctx.save();
-        ctx.setLineDash([5, 5]);
-        ctx.strokeStyle = 'rgba(239, 68, 68, 0.75)'; // Premium translucent red/coral
-        ctx.lineWidth = 1.5;
-
-        const gantryX_canvas = mapX(gantryX);
-        const gantryY_canvas = mapY(gantryY);
-
-        ctx.strokeRect(gantryX_canvas, gantryY_canvas, gantryW * scale, gantryH * scale);
-
-        // Draw gantry fill (very light glassmorphic red)
-        ctx.fillStyle = 'rgba(239, 68, 68, 0.04)';
-        ctx.fillRect(gantryX_canvas, gantryY_canvas, gantryW * scale, gantryH * scale);
-
-        // Draw Knife / Tool center dot
-        ctx.fillStyle = '#ef4444'; // Bright Red
-        ctx.beginPath();
-        ctx.arc(mapX(gantryCenter.x), mapY(gantryCenter.y), 4, 0, 2 * Math.PI);
-        ctx.fill();
-
-        // Draw gantry labels
-        ctx.fillStyle = '#ef4444';
-        ctx.font = '9px ui-monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(`Gantry (${gantryW}x${gantryH}mm)`, mapX(gantryCenter.x), mapY(gantryY) - 5);
-        ctx.fillText("Knife (Center)", mapX(gantryCenter.x), mapY(gantryCenter.y) - 8);
-
-        ctx.restore();
-    }
 
     // Empty State
     if (paths.length === 0) {

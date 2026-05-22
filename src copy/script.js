@@ -63,8 +63,7 @@ const state = {
     currentLine: null,   // Tracks the exact string currently being sent
     wasInterrupted: false, // Flags if the job was stopped midway
     isWaitingForReady: false, // Flag to wait for Pico's "ready" when buffer is full
-    resendTimeout: null, // Tracks the timeout for resending commands to prevent spam
-    simulatedPathIndex: -1 // Tracks executed path index in simulation and live runs
+    resendTimeout: null  // Tracks the timeout for resending commands to prevent spam
 };
 
 // --- DOM Elements ---
@@ -168,7 +167,6 @@ function startJob() {
     }
     
     state.wasInterrupted = false;
-    state.simulatedPathIndex = -1;
 
     log(`Starting Job: ${state.gcodeQueue.length} lines.`, 'success');
     
@@ -223,28 +221,8 @@ function sendNextLine() {
             state.lastSentCmd = state.currentLine;
         }
 
-        const isSimMode = document.getElementById('simModeCheckbox')?.checked;
-
-        const isMoveOrCut = state.currentLine.toLowerCase().startsWith('move') || 
-                           state.currentLine.toLowerCase().startsWith('g0') || 
-                           state.currentLine.toLowerCase().startsWith('g1');
-        if (isMoveOrCut) {
-            state.simulatedPathIndex++;
-            renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, state.simulatedPathIndex);
-        }
-
-        if (isSimMode) {
-            log(`> ${state.currentLine}`, 'tx');
-            // Simulate the "Ack" receipt after a short delay
-            setTimeout(() => {
-                if (!state.isSending) return;
-                log('PICO: ok', 'success');
-                sendNextLine();
-            }, 60); // 60ms delay per command gives a fast, smooth, satisfying animation!
-        } else {
-            connection.send(state.currentLine);
-            log(`> ${state.currentLine}`, 'tx'); 
-        }
+        connection.send(state.currentLine);
+        log(`> ${state.currentLine}`, 'tx'); 
     } else {
         finishJob();
     }
@@ -316,62 +294,8 @@ if (btnToggleMotors) {
 
 const btnPingAll = document.getElementById('btnPingAll');
 if (btnPingAll) {
-    btnPingAll.addEventListener('click', async () => {
-        if (!connection.connected) {
-            log('Ping All: Not connected to machine.', 'error');
-            return;
-        }
-
-        // Disable button during the ping process to prevent spamming
-        btnPingAll.disabled = true;
-        const originalText = btnPingAll.textContent;
-        btnPingAll.textContent = 'Pinging...';
-
-        log('Starting sequential Ping All (Nodes 1 to 4)...', 'info');
-        const nodes = [1, 2, 3, 4];
-        
-        for (const node of nodes) {
-            if (!connection.connected) {
-                log('Ping All: Connection lost.', 'error');
-                break;
-            }
-            
-            log(`Sending: ping ${node}`, 'info');
-            connection.send(`ping ${node}`, true);
-            
-            // Wait for response or timeout (e.g. 1.5 seconds)
-            await new Promise((resolve) => {
-                let resolved = false;
-                const timeout = setTimeout(() => {
-                    if (!resolved) {
-                        resolved = true;
-                        log(`Node ${node} ping timeout (no response).`, 'warning');
-                        connection.removeMessageListener(listener);
-                        resolve();
-                    }
-                }, 1500); // 1.5 second timeout is robust for WebSerial
-
-                const listener = (msg) => {
-                    const lowerMsg = msg.toLowerCase();
-                    // We look for a response matching this node, e.g. "pong 1", "pong", "ok", "ack" or direct acknowledgment
-                    if (lowerMsg.includes('pong') || lowerMsg.includes('ack') || lowerMsg.includes('ok') || lowerMsg.includes(`ping ${node}`)) {
-                        if (!resolved) {
-                            resolved = true;
-                            clearTimeout(timeout);
-                            connection.removeMessageListener(listener);
-                            log(`Node ${node} responded.`, 'success');
-                            // Small delay before next ping for visual clarity
-                            setTimeout(resolve, 200);
-                        }
-                    }
-                };
-                connection.addMessageListener(listener);
-            });
-        }
-        
-        log('Ping All sequence completed.', 'success');
-        btnPingAll.disabled = false;
-        btnPingAll.textContent = originalText;
+    btnPingAll.addEventListener('click', () => {
+        connection.send('ping all', true);
     });
 }
 
@@ -448,12 +372,6 @@ const onGCodeReady = (newGCode, stepsPerMM = 1.0) => {
     editor.value = newGCode;
     state.wasInterrupted = false; // Reset interruption flag on new file
     state.lastSentCmd = null; // Clear last known position
-    
-    // Enable start button if connected or in simulation mode
-    const isSim = document.getElementById('simModeCheckbox')?.checked;
-    if (connection.connected || isSim) {
-        btnStart.disabled = false;
-    }
 };
 
 // Handle "Open File" button
@@ -486,9 +404,6 @@ const updateAxisLabels = () => {
 
 const retriggerConversion = () => {
     updateAxisLabels();
-    if (state.gcode && !document.getElementById('canvasContainer').classList.contains('hidden')) {
-         renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM);
-    }
     if (state.currentFile && state.currentFile.name.toLowerCase().endsWith('.svg')) {
         log('Re-calculating trajectory with new settings...', 'info');
         handleFile(state.currentFile, onGCodeReady, window.switchTab);
@@ -519,7 +434,6 @@ if (maxSpeedSlider && maxSpeedInput) {
 [
     segmentLengthSlider, segmentLengthInput, cuttingSpeedSlider, cuttingSpeedInput,
     maxStepsSlider, maxStepsInput, maxSpeedSlider, maxSpeedInput,
-    'bedWidthInput', 'bedHeightInput', 'gantryWidthInput', 'gantryHeightInput',
     'xRs485Id','xMotorSteps','xMicrosteps','xMmPerRev',
     'yRs485Id','yMotorSteps','yMicrosteps','yMmPerRev',
     'zRs485Id','zMotorSteps','zMicrosteps','zMmPerRev',
@@ -531,17 +445,6 @@ if (maxSpeedSlider && maxSpeedInput) {
         el.addEventListener('input',  updateAxisLabels);
     }
 });
-
-// Watch simulation mode checkbox
-const simModeCheckbox = document.getElementById('simModeCheckbox');
-if (simModeCheckbox) {
-    simModeCheckbox.addEventListener('change', () => {
-        updateStatus(connection.connected);
-        if (simModeCheckbox.checked && state.gcode) {
-            btnStart.disabled = false;
-        }
-    });
-}
 
 // Initialize labels on load
 updateAxisLabels();

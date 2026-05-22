@@ -44,7 +44,6 @@ const userCount = document.getElementById('userCount');
  * @param {boolean} isConnected - True if WebSocket is open.
  */
 export function updateStatus(isConnected) {
-    const isSimMode = document.getElementById('simModeCheckbox')?.checked;
     if (isConnected) {
         statusText.textContent = "Connected";
         statusBadge.style.backgroundColor = "#a7f3d0"; // Green bg
@@ -56,7 +55,7 @@ export function updateStatus(isConnected) {
         statusBadge.style.backgroundColor = "#fca5a5"; // Red bg
         statusBadge.style.color = "#7f1d1d";           // Dark Red text
         statusDot.style.backgroundColor = "#ef4444";   // Bright Red dot
-        btnStart.disabled = !isSimMode;  // Disable Start button (safety) unless in simulation mode
+        btnStart.disabled = true;  // Disable Start button (safety)
     }
 }
 

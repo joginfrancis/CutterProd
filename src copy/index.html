@@ -3,23 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cutter (WiFi)</title>
+    <title>Cutter (Serial)</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
 <header>
-    <h1>Cutter (WiFi)</h1>
+    <h1>Cutter (Serial)</h1>
     <div style="display: flex; align-items: center; gap: 1rem;">
         <span id="userCount" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 500;"></span>
-        <!-- Premium slide toggle switch for simulation mode -->
-        <label class="sim-switch-container" title="Toggle simulation mode">
-            <span class="sim-switch-label">Simulation</span>
-            <input type="checkbox" id="simModeCheckbox" style="display: none;">
-            <div class="sim-switch-outer">
-                <div class="sim-switch-inner"></div>
-            </div>
-        </label>
         <div class="status-badge" id="statusBadge">
             <span class="status-dot"></span>
             <span id="statusText">Disconnected</span>
@@ -213,29 +205,6 @@
                     <input type="number" id="maxSpeedInput" value="30000" step="1" min="1000" max="65535">
                 </div>
                 <span class="help-text">Limit Steps-Per-Second. Feedrates are scaled down to ensure synchronization if exceeded.</span>
-            </div>
-            <hr class="modal-divider">
-
-            <div class="axis-group">
-                <div class="axis-group-label">Physical Dimensions</div>
-                <div class="axis-row" style="grid-template-columns: repeat(4, 1fr);">
-                    <div class="axis-cell">
-                        <input type="number" id="bedWidthInput" value="960" step="10" min="100">
-                        <span>Bed Width (mm)</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="bedHeightInput" value="770" step="10" min="100">
-                        <span>Bed Height (mm)</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="gantryWidthInput" value="210" step="10" min="10">
-                        <span>Gantry Width (mm)</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="gantryHeightInput" value="180" step="10" min="10">
-                        <span>Gantry Height (mm)</span>
-                    </div>
-                </div>
             </div>
             <hr class="modal-divider">
 
