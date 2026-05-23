@@ -219,6 +219,10 @@ class SvgConverter {
     // Limits
     this.maxSteps = options.maxSteps !== undefined ? options.maxSteps : 30000;
     this.maxSpeed = options.maxSpeed !== undefined ? options.maxSpeed : 30000;
+    
+    // Bounds
+    this.bedW = options.bedW !== undefined ? options.bedW : Infinity;
+    this.bedH = options.bedH !== undefined ? options.bedH : Infinity;
   }
 
   /**
@@ -398,6 +402,40 @@ class SvgConverter {
               { type: 'C', args: [cx - r, cy - k*r, cx - k*r, cy - r, cx, cy - r] },
               { type: 'C', args: [cx + k*r, cy - r, cx + r, cy - k*r, cx + r, cy] }
           ];
+      } else if (tagName === 'ellipse') {
+          const cx = parseFloat(el.getAttribute('cx') || 0);
+          const cy = parseFloat(el.getAttribute('cy') || 0);
+          const rx = parseFloat(el.getAttribute('rx') || 0);
+          const ry = parseFloat(el.getAttribute('ry') || 0);
+          const k = 0.552284749831;
+          return [
+              { type: 'M', args: [cx + rx, cy] },
+              { type: 'C', args: [cx + rx, cy + k*ry, cx + k*rx, cy + ry, cx, cy + ry] },
+              { type: 'C', args: [cx - k*rx, cy + ry, cx - rx, cy + k*ry, cx - rx, cy] },
+              { type: 'C', args: [cx - rx, cy - k*ry, cx - k*rx, cy - ry, cx, cy - ry] },
+              { type: 'C', args: [cx + k*rx, cy - ry, cx + rx, cy - k*ry, cx + rx, cy] }
+          ];
+      } else if (tagName === 'line') {
+          const x1 = parseFloat(el.getAttribute('x1') || 0);
+          const y1 = parseFloat(el.getAttribute('y1') || 0);
+          const x2 = parseFloat(el.getAttribute('x2') || 0);
+          const y2 = parseFloat(el.getAttribute('y2') || 0);
+          return [
+              { type: 'M', args: [x1, y1] },
+              { type: 'L', args: [x2, y2] }
+          ];
+      } else if (tagName === 'polyline' || tagName === 'polygon') {
+          const pointsStr = el.getAttribute('points') || '';
+          const points = pointsStr.trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
+          if (points.length < 2) return [];
+          const cmds = [{ type: 'M', args: [points[0], points[1]] }];
+          for (let i = 2; i < points.length; i += 2) {
+              if (i + 1 < points.length) cmds.push({ type: 'L', args: [points[i], points[i+1]] });
+          }
+          if (tagName === 'polygon') {
+              cmds.push({ type: 'Z', args: [] });
+          }
+          return cmds;
       }
       return [];
   }
@@ -622,6 +660,10 @@ class SvgConverter {
    * @description Formats and emits a single row of CSV data, automatically handling Tangential Knife rotations.
    */
   emitPoint(data, state, x, y, z, vx, vy, vz) {
+      // Clamp coordinates to cutting bed bounds
+      x = Math.max(0, Math.min(this.bedW, x));
+      y = Math.max(0, Math.min(this.bedH, y));
+
       const dx = x - state.machineX;
       const dy = y - state.machineY;
       const dSq = dx * dx + dy * dy;

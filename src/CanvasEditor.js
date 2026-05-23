@@ -223,9 +223,11 @@ export class CanvasEditor {
         this._isDown   = false;
         this._draft    = null;   // shape being drawn
         this._draftPts = [];     // pencil points
-        this._sel      = null;   // selected shape id
+        this._sel      = [];     // selected shape ids
         this._dragStart = null;  // { mx, my } machine coords at drag start
-        this._shapePre  = null;  // deep copy of shape at drag start
+        this._shapePre  = null;  // deep copy of shapes at drag start
+        this._marqueeStart = null; // { mx, my } for rectangular selection
+        this._marqueeEnd = null;
 
         // Bezier tool state — collects clicks: [P0, CP1, CP2, P1]
         this._bezierPts   = [];  // placed anchor/control points so far
@@ -269,7 +271,9 @@ export class CanvasEditor {
         this._bezierPts  = [];
         this._bezierMouse = null;
         this._isDown     = false;
-        if (tool !== 'select') this._sel = null;
+        this._marqueeStart = null;
+        this._marqueeEnd = null;
+        if (tool !== 'select') this._sel = [];
         this.canvas.style.cursor = this._cursorForTool();
         this.draw();
     }
@@ -277,7 +281,7 @@ export class CanvasEditor {
     setStrokeWidth(w) { this.strokeWidth = w; }
     setEraserRadius(r) { this.eraserRadius = r; }
 
-    clearAll() { this.shapes = []; this._sel = null; this.draw(); }
+    clearAll() { this.shapes = []; this._sel = []; this.draw(); }
 
     // ── Coordinate helpers ────────────────────────────────────────────────────
 
@@ -332,10 +336,18 @@ export class CanvasEditor {
 
         if (this.tool === 'select') {
             const hit = [...this.shapes].reverse().find(s => hitTest(s, m.x, m.y, 5 / this.view.scale));
-            this._sel = hit ? hit.id : null;
-            if (hit) {
+            
+            if (hit && this._sel.includes(hit.id)) {
                 this._dragStart = { mx: m.x, my: m.y };
-                this._shapePre  = JSON.parse(JSON.stringify(hit));
+                this._shapePre = this.shapes.filter(s => this._sel.includes(s.id)).map(s => JSON.parse(JSON.stringify(s)));
+            } else if (hit) {
+                this._sel = [hit.id];
+                this._dragStart = { mx: m.x, my: m.y };
+                this._shapePre = [JSON.parse(JSON.stringify(hit))];
+            } else {
+                this._sel = [];
+                this._marqueeStart = { mx: m.x, my: m.y };
+                this._marqueeEnd = { ...mc };
             }
             this.draw();
             return;
@@ -386,14 +398,37 @@ export class CanvasEditor {
         const m  = this._eventPos(e);
         const mc = this._clamp(m.x, m.y);
 
-        if (this.tool === 'select' && this._sel && this._dragStart) {
-            const dx = m.x - this._dragStart.mx;
-            const dy = m.y - this._dragStart.my;
-            const shape = this.shapes.find(s => s.id === this._sel);
-            if (shape) {
-                // Restore pre-drag snapshot then apply total delta
-                Object.assign(shape, JSON.parse(JSON.stringify(this._shapePre)));
-                translateShape(shape, dx, dy);
+        if (this.tool === 'select') {
+            if (this._marqueeStart) {
+                this._marqueeEnd = mc;
+                this.draw();
+            } else if (this._sel.length > 0 && this._dragStart) {
+                let dx = m.x - this._dragStart.mx;
+                let dy = m.y - this._dragStart.my;
+                
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                for (const pre of this._shapePre) {
+                    const bb = shapeBBox(pre);
+                    minX = Math.min(minX, bb.x);
+                    minY = Math.min(minY, bb.y);
+                    maxX = Math.max(maxX, bb.x + bb.w);
+                    maxY = Math.max(maxY, bb.y + bb.h);
+                }
+                
+                if (minX + dx < 0) dx = -minX;
+                if (maxX + dx > this.view.bedW) dx = this.view.bedW - maxX;
+                if (minY + dy < 0) dy = -minY;
+                if (maxY + dy > this.view.bedH) dy = this.view.bedH - maxY;
+
+                for (const shape of this.shapes) {
+                    if (this._sel.includes(shape.id)) {
+                        const pre = this._shapePre.find(p => p.id === shape.id);
+                        if (pre) {
+                            Object.assign(shape, JSON.parse(JSON.stringify(pre)));
+                            translateShape(shape, dx, dy);
+                        }
+                    }
+                }
                 this.draw();
             }
             return;
@@ -418,16 +453,30 @@ export class CanvasEditor {
             if (this.tool === 'line') {
                 this._draft = makeLine(a.x, a.y, b.x, b.y, this.strokeWidth);
             } else if (this.tool === 'rect') {
-                this._draft = makeRect(
-                    Math.min(a.x, b.x), Math.min(a.y, b.y),
-                    Math.abs(b.x - a.x), Math.abs(b.y - a.y),
-                    this.strokeWidth
-                );
+                let w = Math.abs(b.x - a.x);
+                let h = Math.abs(b.y - a.y);
+                if (e.shiftKey) {
+                    const size = Math.max(w, h);
+                    w = size;
+                    h = size;
+                }
+                const rx = b.x < a.x ? Math.max(0, a.x - w) : a.x;
+                const ry = b.y < a.y ? Math.max(0, a.y - h) : a.y;
+                w = b.x < a.x ? a.x - rx : Math.min(this.view.bedW - rx, w);
+                h = b.y < a.y ? a.y - ry : Math.min(this.view.bedH - ry, h);
+                this._draft = makeRect(rx, ry, w, h, this.strokeWidth);
             } else if (this.tool === 'circle') {
+                let rx = Math.abs(b.x - a.x);
+                let ry = Math.abs(b.y - a.y);
+                if (e.shiftKey) {
+                    const size = Math.max(rx, ry);
+                    rx = size;
+                    ry = size;
+                }
+                rx = Math.min(rx, Math.min(a.x, this.view.bedW - a.x));
+                ry = Math.min(ry, Math.min(a.y, this.view.bedH - a.y));
                 this._draft = makeCircle(
-                    a.x, a.y,
-                    Math.abs(b.x - a.x), Math.abs(b.y - a.y),
-                    this.strokeWidth
+                    a.x, a.y, rx, ry, this.strokeWidth
                 );
             }
             this.draw();
@@ -439,8 +488,22 @@ export class CanvasEditor {
         this._isDown = false;
 
         if (this.tool === 'select') {
+            if (this._marqueeStart && this._marqueeEnd) {
+                const xmin = Math.min(this._marqueeStart.mx, this._marqueeEnd.x);
+                const xmax = Math.max(this._marqueeStart.mx, this._marqueeEnd.x);
+                const ymin = Math.min(this._marqueeStart.my, this._marqueeEnd.y);
+                const ymax = Math.max(this._marqueeStart.my, this._marqueeEnd.y);
+                
+                this._sel = this.shapes.filter(s => {
+                    const bb = shapeBBox(s);
+                    return !(bb.x > xmax || bb.x + bb.w < xmin || bb.y > ymax || bb.y + bb.h < ymin);
+                }).map(s => s.id);
+            }
             this._dragStart = null;
             this._shapePre  = null;
+            this._marqueeStart = null;
+            this._marqueeEnd = null;
+            this.draw();
             return;
         }
 
@@ -465,25 +528,27 @@ export class CanvasEditor {
 
     _onDblClick() {
         // Double-click deselects
-        this._sel = null;
+        this._sel = [];
         this.draw();
     }
 
     _onKey(e) {
         if (e.key === 'Delete' || e.key === 'Backspace') {
-            if (this._sel !== null && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
-                this.shapes = this.shapes.filter(s => s.id !== this._sel);
-                this._sel = null;
+            if (this._sel.length > 0 && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+                this.shapes = this.shapes.filter(s => !this._sel.includes(s.id));
+                this._sel = [];
                 this.draw();
                 this._emitChange();
             }
         }
         if (e.key === 'Escape') {
-            this._sel        = null;
+            this._sel        = [];
             this._draft      = null;
             this._bezierPts  = [];
             this._bezierMouse = null;
             this._isDown     = false;
+            this._marqueeStart = null;
+            this._marqueeEnd = null;
             this.draw();
         }
     }
@@ -491,9 +556,7 @@ export class CanvasEditor {
     _eraseAt(mx, my) {
         const tol = this.eraserRadius;
         this.shapes = this.shapes.filter(s => !hitTest(s, mx, my, tol / this.view.scale));
-        if (this._sel && !this.shapes.find(s => s.id === this._sel)) {
-            this._sel = null;
-        }
+        this._sel = this._sel.filter(id => this.shapes.some(s => s.id === id));
         this._emitChange();
     }
 
@@ -547,13 +610,35 @@ export class CanvasEditor {
         ctx.restore();
 
         // ── Shapes ──────────────────────────────────────────────────────────
+        // Save state and clip to the bed boundaries so shapes don't visually overflow
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(mapX(0), mapY(bedH), bedW * scale, bedH * scale);
+        ctx.clip();
+
         for (const shape of this.shapes) {
-            this._drawShape(ctx, shape, mapX, mapY, scale, shape.id === this._sel);
+            this._drawShape(ctx, shape, mapX, mapY, scale, this._sel.includes(shape.id));
         }
 
         // Draft (being drawn right now)
         if (this._draft) {
             this._drawShape(ctx, this._draft, mapX, mapY, scale, false, true);
+        }
+        
+        // Marquee Selection Box
+        if (this._marqueeStart && this._marqueeEnd) {
+            ctx.save();
+            ctx.fillStyle = 'rgba(59, 130, 246, 0.1)';
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            const x = Math.min(this._marqueeStart.mx, this._marqueeEnd.x);
+            const y = Math.min(this._marqueeStart.my, this._marqueeEnd.y);
+            const w = Math.abs(this._marqueeStart.mx - this._marqueeEnd.x);
+            const h = Math.abs(this._marqueeStart.my - this._marqueeEnd.y);
+            ctx.fillRect(mapX(x), mapY(y+h), w*scale, h*scale);
+            ctx.strokeRect(mapX(x), mapY(y+h), w*scale, h*scale);
+            ctx.restore();
         }
 
         // Bezier in-progress: draw placed points + live preview segment
@@ -619,6 +704,8 @@ export class CanvasEditor {
             ctx.fillText(hints[pts.length] || '', mapX(this.view.bedW / 2), mapY(this.view.bedH) + 22);
             ctx.restore();
         }
+        
+        ctx.restore(); // Restore from bed boundaries clipping
     }
 
     _drawShape(ctx, shape, mapX, mapY, scale, selected, isDraft) {
@@ -724,12 +811,6 @@ export class CanvasEditor {
 
     // ── Export ────────────────────────────────────────────────────────────────
 
-    /**
-     * Returns an SVG string with the drawn shapes as <path> elements.
-     * The viewBox matches the physical bed (machine mm units).
-     * Circles/rects are converted to polyline paths for full compatibility
-     * with the SvgConverter pipeline.
-     */
     exportAsSVG() {
         const { bedW, bedH } = this.view;
         const paths = this.shapes
@@ -738,10 +819,110 @@ export class CanvasEditor {
             .map(d => `  <path d="${d}" />`)
             .join('\n');
 
-        return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${bedW} ${bedH}" width="${bedW}mm" height="${bedH}mm">
+        return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${bedW} ${bedH}" width="${bedW}mm" height="${bedH}mm" data-source="canvas">
 <style>path { fill: none; stroke: #000; stroke-width: 1px; }</style>
 ${paths}
 </svg>`;
+    }
+
+    importSVG(svgText) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(svgText, 'image/svg+xml');
+        
+        // We need to un-flip the Y axis since exportAsSVG flips it.
+        const { bedH } = this.view;
+        const fy = y => (bedH - y);
+
+        const paths = doc.querySelectorAll('path');
+        paths.forEach(p => {
+            const d = p.getAttribute('d');
+            if (!d) return;
+            const strokeWidth = parseFloat(p.getAttribute('stroke-width')) || 1.5;
+            
+            // Very naive parser for paths
+            if (d.includes('C') || d.includes('c')) {
+                // Bezier: M x1 y1 C cx1 cy1 cx2 cy2 x2 y2
+                const match = d.match(/M\s+([-\d.]+)\s+([-\d.]+)\s+C\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/i);
+                if (match) {
+                    this.shapes.push(makeBezier(
+                        parseFloat(match[1]), fy(parseFloat(match[2])),
+                        parseFloat(match[3]), fy(parseFloat(match[4])),
+                        parseFloat(match[5]), fy(parseFloat(match[6])),
+                        parseFloat(match[7]), fy(parseFloat(match[8])),
+                        strokeWidth
+                    ));
+                }
+            } else {
+                // Pencil / Line / Rect / Circle approximations
+                const points = [];
+                const regex = /[ML]\s+([-\d.]+)\s+([-\d.]+)/gi;
+                let match;
+                while ((match = regex.exec(d)) !== null) {
+                    points.push({ x: parseFloat(match[1]), y: fy(parseFloat(match[2])) });
+                }
+                if (points.length === 2) {
+                    this.shapes.push(makeLine(points[0].x, points[0].y, points[1].x, points[1].y, strokeWidth));
+                } else if (points.length > 2) {
+                    this.shapes.push(makePencil(points, strokeWidth));
+                }
+            }
+        });
+
+        const rects = doc.querySelectorAll('rect');
+        rects.forEach(r => {
+            const x = parseFloat(r.getAttribute('x')||0);
+            const y = parseFloat(r.getAttribute('y')||0);
+            const w = parseFloat(r.getAttribute('width')||0);
+            const h = parseFloat(r.getAttribute('height')||0);
+            this.shapes.push(makeRect(x, fy(y+h), w, h, 1.5));
+        });
+
+        const circles = doc.querySelectorAll('circle');
+        circles.forEach(c => {
+            const cx = parseFloat(c.getAttribute('cx')||0);
+            const cy = parseFloat(c.getAttribute('cy')||0);
+            const r = parseFloat(c.getAttribute('r')||0);
+            this.shapes.push(makeCircle(cx, fy(cy), r, r, 1.5));
+        });
+        
+        const ellipses = doc.querySelectorAll('ellipse');
+        ellipses.forEach(c => {
+            const cx = parseFloat(c.getAttribute('cx')||0);
+            const cy = parseFloat(c.getAttribute('cy')||0);
+            const rx = parseFloat(c.getAttribute('rx')||0);
+            const ry = parseFloat(c.getAttribute('ry')||0);
+            this.shapes.push(makeCircle(cx, fy(cy), rx, ry, 1.5));
+        });
+
+        const lines = doc.querySelectorAll('line');
+        lines.forEach(l => {
+            const x1 = parseFloat(l.getAttribute('x1')||0);
+            const y1 = parseFloat(l.getAttribute('y1')||0);
+            const x2 = parseFloat(l.getAttribute('x2')||0);
+            const y2 = parseFloat(l.getAttribute('y2')||0);
+            this.shapes.push(makeLine(x1, fy(y1), x2, fy(y2), 1.5));
+        });
+        
+        const polylines = doc.querySelectorAll('polyline, polygon');
+        polylines.forEach(p => {
+            const ptsStr = p.getAttribute('points') || '';
+            const coords = ptsStr.trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
+            const points = [];
+            for(let i=0; i<coords.length; i+=2) {
+                if (i+1 < coords.length) points.push({x: coords[i], y: fy(coords[i+1])});
+            }
+            if (p.tagName.toLowerCase() === 'polygon' && points.length > 0) {
+                points.push({...points[0]});
+            }
+            if (points.length === 2) {
+                this.shapes.push(makeLine(points[0].x, points[0].y, points[1].x, points[1].y, 1.5));
+            } else if (points.length > 2) {
+                this.shapes.push(makePencil(points, 1.5));
+            }
+        });
+
+        this.draw();
+        this._emitChange();
     }
 
     get hasShapes() { return this.shapes.length > 0; }

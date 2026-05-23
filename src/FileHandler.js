@@ -146,6 +146,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 finalH = urumiMeta.physical_height;
                 log(`Direct visual alignment loaded: ${finalW.toFixed(1)}x${finalH.toFixed(1)}mm gantry bed at origin`, 'success');
             } else {
+                const isCanvas = svg.getAttribute('data-source') === 'canvas';
+
                 // 1. Calculate initial scale (Unit Conversion)
                 scale = (vbW > 0) ? (w_mm / vbW) : 1.0;
 
@@ -154,7 +156,7 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 let currentH = vbH * scale;
 
                 // 2. Auto-Fit (Scale Down)
-                if (currentW > (bedW - margin) || currentH > (bedH - margin)) {
+                if (!isCanvas && (currentW > (bedW - margin) || currentH > (bedH - margin))) {
                     const scaleW = (bedW - margin) / currentW;
                     const scaleH = (bedH - margin) / currentH;
                     const fitScale = Math.min(scaleW, scaleH);
@@ -166,8 +168,14 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 finalW = vbW * scale;
                 finalH = vbH * scale;
 
-                const offsetX = (bedW - finalW) / 2;
-                const offsetY = (bedH - finalH) / 2;
+                let offsetX = 0;
+                let offsetY = 0;
+
+                if (!isCanvas) {
+                    offsetX = (bedW - finalW) / 2;
+                    offsetY = (bedH - finalH) / 2;
+                }
+
                 const vbMinX = viewbox.length === 4 ? viewbox[0] : 0;
                 const vbMinY = viewbox.length === 4 ? viewbox[1] : 0;
 
@@ -227,7 +235,9 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                     idY: idY,
                     idZ: idZ,
                     idA: idA,
-                    flipY: true
+                    flipY: true,
+                    bedW: bedW,
+                    bedH: bedH
                 });
                 const gcode = converter.convert(text);
                 

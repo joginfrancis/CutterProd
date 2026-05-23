@@ -41,6 +41,8 @@ CutterProd/
 - **Segmented trajectory generation** — paths are subdivided into precise, equal-length segments (configurable resolution down to 0.1 mm).
 - **Bezier kinematics** — cubic and quadratic Bézier curves are flattened into physical segments with normalised velocity vectors ensuring constant feedrate.
 - **Tangential knife support** — automatic rotational angle calculation with Z-lift/plunge sequences on sharp corners (configurable angle threshold).
+- **Absolute boundary clamping** — all generated machine coordinates are rigidly constrained to the physical bed dimensions (`bedW`, `bedH`) to prevent hardware collisions.
+- **Comprehensive SVG primitive parsing** — native geometry conversion for `<path>`, `<rect>`, `<circle>`, `<ellipse>`, `<line>`, `<polyline>`, and `<polygon>` elements.
 - **Multi-axis relative step output** — all commands are emitted as signed relative steps with synchronised Steps-Per-Second values, ensuring perfect multi-motor arrival.
 - **Per-axis configuration** — independent RS485 IDs, motor steps/rev, microstepping, and mm/rev for X, Y, Z, and A (rotary) axes.
 
@@ -60,6 +62,7 @@ A full interactive vector drawing surface mapped to the physical cutter bed coor
 - **50 mm reference grid** with dashed bed boundary and corner labels.
 - **Stroke width** and **eraser radius** configurable in millimetres.
 - **Undo** (`Ctrl+Z`) and **Clear All** controls.
+- **Import SVG** — Load an existing vector file directly onto the drawing canvas to edit, manipulate, or selectively erase elements before exporting.
 - **Send to Cutter** — exports all shapes as an SVG, pipes it through the `SvgConverter` trajectory compiler, and switches to the Trajectory Preview.
 - All shapes (including rectangles, ellipses, and Bézier curves) are exported as `<path>` elements for full parser compatibility.
 

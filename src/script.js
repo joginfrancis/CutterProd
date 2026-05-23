@@ -574,6 +574,22 @@ document.getElementById('btnDrawSend')?.addEventListener('click', () => {
     handleFile(virtualFile, onGCodeReady, window.switchTab);
 });
 
+// Import SVG to CanvasEditor
+document.getElementById('btnDrawImport')?.addEventListener('click', () => {
+    document.getElementById('drawFileInput')?.click();
+});
+
+document.getElementById('drawFileInput')?.addEventListener('change', async (e) => {
+    if (e.target.files.length === 0) return;
+    const file = e.target.files[0];
+    if (canvasEditor) {
+        const text = await file.text();
+        canvasEditor.importSVG(text);
+        log('SVG imported into drawing editor.', 'success');
+    }
+    e.target.value = ''; // Reset
+});
+
 // Also re-draw bed bg whenever bed size changes
 ['bedWidthInput', 'bedHeightInput'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => {
