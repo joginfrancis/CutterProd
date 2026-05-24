@@ -672,7 +672,6 @@ main {
 }
 
 .btn-action:hover .btn-icon-svg {
-    color: #93c5fd;
 }
 
 #btnSettings:hover .btn-icon-svg {
@@ -807,7 +806,7 @@ main {
 }
 
 .camera-subpanel .btn-action:disabled {
-    opacity: 0.35;
+    opacity: 1;
     cursor: not-allowed;
 }
 
@@ -847,7 +846,7 @@ main {
 }
 
 #btnImportWorkpieceSvg:disabled {
-    opacity: 0.35;
+    opacity: 1;
     background: var(--uc-bg-surface) !important;
     border-color: var(--uc-border-muted) !important;
     box-shadow: none !important;

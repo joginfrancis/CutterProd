@@ -1,0 +1,22 @@
+# Dependency directories
+node_modules/
+jspm_packages/
+web_modules/
+
+# Nested git repositories / submodules that are managed separately
+UrumiCam/
+
+# Handoff and temporary documentation
+handoff.md
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Editor and OS specific files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

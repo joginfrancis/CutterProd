@@ -829,9 +829,48 @@ ${paths}
         const parser = new DOMParser();
         const doc = parser.parseFromString(svgText, 'image/svg+xml');
         
-        // We need to un-flip the Y axis since exportAsSVG flips it.
-        const { bedH } = this.view;
-        const fy = y => (bedH - y);
+        const { bedW, bedH } = this.view;
+        
+        const svg = doc.querySelector('svg');
+        let vbW = bedW, vbH = bedH;
+        let scale = 1.0;
+        let offsetX = 0;
+        let offsetY = 0;
+        
+        if (svg) {
+            const isCanvas = svg.getAttribute('data-source') === 'canvas';
+            if (!isCanvas) {
+                const wAttr = parseFloat(svg.getAttribute('width')) || bedW;
+                const hAttr = parseFloat(svg.getAttribute('height')) || bedH;
+                const vbAttr = svg.getAttribute('viewBox');
+                if (vbAttr) {
+                    const vb = vbAttr.split(/[\s,]+/).map(parseFloat);
+                    if (vb.length === 4) {
+                        vbW = vb[2];
+                        vbH = vb[3];
+                    }
+                } else {
+                    vbW = wAttr;
+                    vbH = hAttr;
+                }
+                
+                const margin = 10;
+                if (vbW > (bedW - margin) || vbH > (bedH - margin)) {
+                    const scaleW = (bedW - margin) / vbW;
+                    const scaleH = (bedH - margin) / vbH;
+                    scale = Math.min(scaleW, scaleH);
+                    offsetX = (bedW - (vbW * scale)) / 2;
+                    offsetY = (bedH - (vbH * scale)) / 2;
+                }
+            }
+        }
+
+        const tx = x => (x * scale) + offsetX;
+        const ty = y => (y * scale) + offsetY;
+        const fy = y => bedH - ty(y); // Flip Y to Machine coordinates
+
+        // Use SvgConverter's robust parser to flatten all paths
+        const converter = new SvgConverter();
 
         const paths = doc.querySelectorAll('path');
         paths.forEach(p => {
@@ -839,32 +878,81 @@ ${paths}
             if (!d) return;
             const strokeWidth = parseFloat(p.getAttribute('stroke-width')) || 1.5;
             
-            // Very naive parser for paths
-            if (d.includes('C') || d.includes('c')) {
-                // Bezier: M x1 y1 C cx1 cy1 cx2 cy2 x2 y2
-                const match = d.match(/M\s+([-\d.]+)\s+([-\d.]+)\s+C\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)/i);
-                if (match) {
-                    this.shapes.push(makeBezier(
-                        parseFloat(match[1]), fy(parseFloat(match[2])),
-                        parseFloat(match[3]), fy(parseFloat(match[4])),
-                        parseFloat(match[5]), fy(parseFloat(match[6])),
-                        parseFloat(match[7]), fy(parseFloat(match[8])),
-                        strokeWidth
-                    ));
+            const commands = converter.parsePathData(d);
+            
+            let currentPathPts = [];
+            let startPt = null;
+            let cur = {x:0, y:0};
+            
+            commands.forEach(cmd => {
+                const isRelative = (cmd.type === cmd.type.toLowerCase());
+                const type = cmd.type.toUpperCase();
+                const args = cmd.args;
+                
+                const getPt = (idx) => isRelative 
+                    ? { x: cur.x + args[idx], y: cur.y + args[idx+1] }
+                    : { x: args[idx], y: args[idx+1] };
+
+                if (type === 'M') {
+                    if (currentPathPts.length > 0) {
+                        if (currentPathPts.length === 2) this.shapes.push(makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth));
+                        else this.shapes.push(makePencil(currentPathPts, strokeWidth));
+                        currentPathPts = [];
+                    }
+                    const pt = getPt(0);
+                    cur = pt;
+                    startPt = pt;
+                    currentPathPts.push({ x: tx(pt.x), y: fy(pt.y) });
+                    
+                    // Subsequent coordinates in M/m are treated as L/l
+                    for (let k = 2; k < args.length; k += 2) {
+                        const ptNext = getPt(k);
+                        cur = ptNext;
+                        currentPathPts.push({ x: tx(ptNext.x), y: fy(ptNext.y) });
+                    }
+                } else if (type === 'L') {
+                    for (let k = 0; k < args.length; k += 2) {
+                        const pt = getPt(k);
+                        cur = pt;
+                        currentPathPts.push({ x: tx(pt.x), y: fy(pt.y) });
+                    }
+                } else if (type === 'H') {
+                    for (let k = 0; k < args.length; k += 1) {
+                        cur.x = isRelative ? cur.x + args[k] : args[k];
+                        currentPathPts.push({ x: tx(cur.x), y: fy(cur.y) });
+                    }
+                } else if (type === 'V') {
+                    for (let k = 0; k < args.length; k += 1) {
+                        cur.y = isRelative ? cur.y + args[k] : args[k];
+                        currentPathPts.push({ x: tx(cur.x), y: fy(cur.y) });
+                    }
+                } else if (type === 'Z') {
+                    if (startPt) {
+                        cur = { ...startPt };
+                        currentPathPts.push({ x: tx(cur.x), y: fy(cur.y) });
+                    }
+                    if (currentPathPts.length > 0) {
+                        if (currentPathPts.length === 2) this.shapes.push(makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth));
+                        else this.shapes.push(makePencil(currentPathPts, strokeWidth));
+                        currentPathPts = [];
+                    }
+                } else if (type === 'C' || type === 'S' || type === 'Q' || type === 'T') {
+                    // Approximate curves by linking endpoints for canvas preview
+                    const ptsPerCmd = (type === 'C') ? 6 : ((type === 'S' || type === 'Q') ? 4 : 2);
+                    for (let k = 0; k < args.length; k += ptsPerCmd) {
+                        const endIdx = k + ptsPerCmd - 2;
+                        if (endIdx < args.length) {
+                            const pt = getPt(endIdx);
+                            cur = pt;
+                            currentPathPts.push({ x: tx(pt.x), y: fy(pt.y) });
+                        }
+                    }
                 }
-            } else {
-                // Pencil / Line / Rect / Circle approximations
-                const points = [];
-                const regex = /[ML]\s+([-\d.]+)\s+([-\d.]+)/gi;
-                let match;
-                while ((match = regex.exec(d)) !== null) {
-                    points.push({ x: parseFloat(match[1]), y: fy(parseFloat(match[2])) });
-                }
-                if (points.length === 2) {
-                    this.shapes.push(makeLine(points[0].x, points[0].y, points[1].x, points[1].y, strokeWidth));
-                } else if (points.length > 2) {
-                    this.shapes.push(makePencil(points, strokeWidth));
-                }
+            });
+            
+            if (currentPathPts.length > 0) {
+                if (currentPathPts.length === 2) this.shapes.push(makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth));
+                else this.shapes.push(makePencil(currentPathPts, strokeWidth));
             }
         });
 
@@ -874,7 +962,7 @@ ${paths}
             const y = parseFloat(r.getAttribute('y')||0);
             const w = parseFloat(r.getAttribute('width')||0);
             const h = parseFloat(r.getAttribute('height')||0);
-            this.shapes.push(makeRect(x, fy(y+h), w, h, 1.5));
+            this.shapes.push(makeRect(tx(x), fy(y+h), w * scale, h * scale, 1.5));
         });
 
         const circles = doc.querySelectorAll('circle');
@@ -882,7 +970,7 @@ ${paths}
             const cx = parseFloat(c.getAttribute('cx')||0);
             const cy = parseFloat(c.getAttribute('cy')||0);
             const r = parseFloat(c.getAttribute('r')||0);
-            this.shapes.push(makeCircle(cx, fy(cy), r, r, 1.5));
+            this.shapes.push(makeCircle(tx(cx), fy(cy), r * scale, r * scale, 1.5));
         });
         
         const ellipses = doc.querySelectorAll('ellipse');
@@ -891,7 +979,7 @@ ${paths}
             const cy = parseFloat(c.getAttribute('cy')||0);
             const rx = parseFloat(c.getAttribute('rx')||0);
             const ry = parseFloat(c.getAttribute('ry')||0);
-            this.shapes.push(makeCircle(cx, fy(cy), rx, ry, 1.5));
+            this.shapes.push(makeCircle(tx(cx), fy(cy), rx * scale, ry * scale, 1.5));
         });
 
         const lines = doc.querySelectorAll('line');
@@ -900,7 +988,7 @@ ${paths}
             const y1 = parseFloat(l.getAttribute('y1')||0);
             const x2 = parseFloat(l.getAttribute('x2')||0);
             const y2 = parseFloat(l.getAttribute('y2')||0);
-            this.shapes.push(makeLine(x1, fy(y1), x2, fy(y2), 1.5));
+            this.shapes.push(makeLine(tx(x1), fy(y1), tx(x2), fy(y2), 1.5));
         });
         
         const polylines = doc.querySelectorAll('polyline, polygon');
@@ -909,7 +997,7 @@ ${paths}
             const coords = ptsStr.trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
             const points = [];
             for(let i=0; i<coords.length; i+=2) {
-                if (i+1 < coords.length) points.push({x: coords[i], y: fy(coords[i+1])});
+                if (i+1 < coords.length) points.push({x: tx(coords[i]), y: fy(coords[i+1])});
             }
             if (p.tagName.toLowerCase() === 'polygon' && points.length > 0) {
                 points.push({...points[0]});

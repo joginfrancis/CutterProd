@@ -13,5 +13,8 @@
     "vision"
   ],
   "author": "Antigravity AI",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "jsdom": "^29.1.1"
+  }
 }
