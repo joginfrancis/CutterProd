@@ -40,6 +40,16 @@ import { CanvasEditor } from './CanvasEditor.js?v=4';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
+ * Canonical per-axis resolution fallbacks — these MUST match the firmware's
+ * machine config (Urumi-Fw/pipeline/stages/config.py): X/Y 160 steps/mm,
+ * Z 1200 steps/mm, A 120 steps/deg. Used only when the Settings inputs are
+ * empty; the UI Settings remain the live source of truth. Centralised here so
+ * the three places that previously hard-coded mismatched defaults (80 / 800 /
+ * 92.44) can no longer drift. (Assessment R3 / fix F3.)
+ */
+const DEFAULT_STEPS = { X: 160, Y: 160, Z: 1200, A: 120 };
+
+/**
  * stampSeq — copies a 26-byte MicroSegment packet, stamps the rolling
  * sequence number into byte [22], and recomputes the CRC-8.
  * Mirrors host/serialise.py:stamp_seq().
@@ -118,6 +128,8 @@ const state = {
     simTimeout: null         // Simulation timeout handle
 };
 
+let wakeLock = null; // Global reference for the Screen Wake Lock API
+
 // --- DOM Elements ---
 // References to HTML elements we need to interact with
 const editor = document.getElementById('gcodeEditor');
@@ -138,35 +150,47 @@ const cuttingSpeedSlider = document.getElementById('cuttingSpeedSlider');
 // Initialize the WebSocket connection. We provide "callbacks" here.
 // Callbacks are functions that run automatically when specific events happen.
 const connection = new MachineConnection({
-    // When the machine ACK's a binary packet with a sequence number
+    // When the machine ACK's a binary packet.
     onAck: (seq) => {
         if (!state.isSending) return;
-        if (seq >= state.base) {
-            // Since ACKs might be cumulative, we process all newly ACKed packets
-            for (let i = state.base; i <= seq; i++) {
-                if (i < state.pendingPackets.length) {
-                    const packet = state.pendingPackets[i];
-                    updatePositionFromPacket(packet);
-                }
-            }
-            state.base = seq + 1;
-            state.lastProgressTime = Date.now();
-            state.crcErrors = 0; // Reset consecutive CRC errors on progress
 
-            // Render path in viewer (works even if tab is hidden)
-            if (state.base - 1 > state.simulatedPathIndex) {
-                state.simulatedPathIndex = state.base - 1;
-                updateViewer();
-            }
+        // Ignore responses that arrive while a Go-Back-N rewind is pending: they
+        // are stale (for packets we are about to resend). This mirrors sender.py's
+        // _flush_responses() — without it, duplicate-skip ACKs would race `base`
+        // ahead of what the Pico actually executed, silently losing motion and
+        // falsely reporting completion. (Assessment R1 / fix F1.)
+        if (state.isGoBackWaiting) return;
 
-            // Send next window
-            sendWindow();
+        // The firmware emits exactly one ACK per received packet and processes
+        // them strictly in order, so each ACK confirms the oldest in-flight packet
+        // (`base`). We deliberately ignore the echoed seq value: after any
+        // duplicate-skip ACK it is the Pico's own ACK counter, NOT the packet
+        // index. Advancing by one per ACK is exactly what sender.py does
+        // (`base += 1`) and keeps `base` aligned with the firmware's expectedSeq.
+        if (state.base < state.pendingPackets.length) {
+            updatePositionFromPacket(state.pendingPackets[state.base]);
+            state.base++;
         }
+        state.lastProgressTime = Date.now();
+        state.crcErrors = 0; // Reset consecutive CRC errors on progress
+
+        // Render path in viewer (works even if tab is hidden)
+        if (state.base - 1 > state.simulatedPathIndex) {
+            state.simulatedPathIndex = state.base - 1;
+            updateViewer();
+        }
+
+        // Send next window
+        sendWindow();
     },
 
     // When the machine says "nope" (Buffer Full) or has a CRC error
     onNack: (reason) => {
         if (!state.isSending) return;
+
+        // Already rewinding — any further NACKs in this window are stale; the
+        // pending go-back will resend everything from `base`. (Fix F1.)
+        if (state.isGoBackWaiting) return;
 
         state.nacksCount++;
         if (reason === 0x03) { // NACK_BAD_MAGIC
@@ -192,10 +216,6 @@ const connection = new MachineConnection({
     // When a text command is acknowledged (e.g. 'ok', 'ack', 'seq reset')
     onAckText: () => {
         if (state.isSending && !state.isBinaryStreaming && !state.isWaitingForDrain) {
-            if (state.currentLine && state.currentLine.startsWith('move')) {
-                state.simulatedPathIndex++;
-                renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, state.simulatedPathIndex, state.binaryPackets);
-            }
             executeNextTextCommand();
         }
     },
@@ -276,10 +296,10 @@ function updatePositionFromPacket(packet) {
     const dz = view.getInt32(9, true);
     const da = view.getInt32(13, true);
 
-    const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
-    const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
-    const zStepsPerMM = getAxisSteps('zMotorSteps', 'zMicrosteps', 'zMmPerRev', 800);
-    const aStepsPerDeg = getAxisSteps('aMotorSteps', 'aMicrosteps', 'aDegPerRev', 92.44);
+    const xStepsPerMM = getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X);
+    const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
+    const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
+    const aStepsPerDeg = getAxisSteps('aStepsPerDeg', DEFAULT_STEPS.A);
 
     jogState.posX += dx / xStepsPerMM;
     jogState.posY += dy / yStepsPerMM;
@@ -452,7 +472,7 @@ function startJob() {
 
     // --- SAFE RETRACT INJECTION (binary packet prepended to binaryPackets) ---
     if (state.wasInterrupted && state.binaryPackets?.length) {
-        const zStepsPerMM = getAxisSteps('zMotorSteps', 'zMicrosteps', 'zMmPerRev', 800);
+        const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
         const zUpStep = Math.round(5 * zStepsPerMM);
         const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
         const stepVz = Math.max(1, Math.round(feedRate * zStepsPerMM));
@@ -471,6 +491,13 @@ function startJob() {
     // 2. Update State
     state.isSending = true;
     setStartButtonState(true); // Visual change (Turn button Red/Stop)
+
+    // F6: Request Wake Lock to prevent browser from throttling JS/WebSerial
+    if ('wakeLock' in navigator) {
+        navigator.wakeLock.request('screen')
+            .then(lock => { wakeLock = lock; log('Wake Lock active.', 'info'); })
+            .catch(err => log('Wake Lock blocked (requires HTTPS or localhost).', 'warning'));
+    }
 
     // 3. Kickoff
     executeNextTextCommand();
@@ -523,6 +550,11 @@ function stopJob() {
         clearTimeout(state.simTimeout);
         state.simTimeout = null;
     }
+    
+    // F6: Release Wake Lock
+    if (wakeLock) {
+        wakeLock.release().then(() => { wakeLock = null; });
+    }
     state.isBinaryStreaming = false;
     state.isWaitingForDrain = false;
     state.isGoBackWaiting = false;
@@ -550,9 +582,9 @@ function stopJob() {
 function generateParkCommands() {
     const cmds = [];
 
-    const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
-    const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
-    const zStepsPerMM = getAxisSteps('zMotorSteps', 'zMicrosteps', 'zMmPerRev', 800);
+    const xStepsPerMM = getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X);
+    const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
+    const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
     const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
 
     // Step 1: Ensure Z-axis is retracted to a safe height (5mm above bed)
@@ -660,10 +692,6 @@ function executeNextTextCommand() {
             setTimeout(() => {
                 if (!state.isSending) return;
                 log('PICO: ok', 'success');
-                if (state.currentLine && state.currentLine.startsWith('move')) {
-                    state.simulatedPathIndex++;
-                    renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, state.simulatedPathIndex, state.binaryPackets);
-                }
                 executeNextTextCommand();
             }, 50);
         } else {
@@ -761,10 +789,28 @@ function finishJob() {
     } else {
         log('Job Complete. Suction deactivated.', 'success');
     }
+    
+    // F6: Release Wake Lock
+    if (wakeLock) {
+        wakeLock.release().then(() => { wakeLock = null; });
+    }
+    
     setStartButtonState(false);
 }
 
 // --- Event Listeners ---
+
+// Wake Lock Re-Acquisition on Tab Visibility Change
+document.addEventListener('visibilitychange', async () => {
+    if (wakeLock !== null && document.visibilityState === 'visible' && state.isSending) {
+        try {
+            wakeLock = await navigator.wakeLock.request('screen');
+            log('Wake Lock re-acquired.', 'info');
+        } catch (err) {
+            log('Wake Lock re-request failed.', 'warning');
+        }
+    }
+});
 
 // --- Panel Toggle Logic ---
 const suctionPanelHeader = document.getElementById('suctionPanelHeader');
@@ -1669,30 +1715,13 @@ document.getElementById('fileInput').addEventListener('change', (e) => {
     handleFile(state.currentFile, onGCodeReady, window.switchTab);
 });
 
-// Helper: compute steps/unit from 3 axis inputs
-function getAxisSteps(motorId, microId, distId, fallback) {
-    const m = parseFloat(document.getElementById(motorId)?.value) || 200;
-    const mi = parseFloat(document.getElementById(microId)?.value) || 1;
-    const d = parseFloat(document.getElementById(distId)?.value) || 1;
-    const v = (m * mi) / d;
+// Helper: compute steps/unit from single input
+function getAxisSteps(inputId, fallback) {
+    const v = parseFloat(document.getElementById(inputId)?.value);
     return (isNaN(v) || v <= 0) ? fallback : v;
 }
 
-const updateAxisLabels = () => {
-    const axes = [
-        { label: 'xStepsLabel', m: 'xMotorSteps', mi: 'xMicrosteps', d: 'xMmPerRev', fb: 160, unit: 'steps/mm' },
-        { label: 'yStepsLabel', m: 'yMotorSteps', mi: 'yMicrosteps', d: 'yMmPerRev', fb: 160, unit: 'steps/mm' },
-        { label: 'zStepsLabel', m: 'zMotorSteps', mi: 'zMicrosteps', d: 'zMmPerRev', fb: 800, unit: 'steps/mm' },
-        { label: 'aStepsLabel', m: 'aMotorSteps', mi: 'aMicrosteps', d: 'aDegPerRev', fb: 92.44, unit: 'steps/°' },
-    ];
-    axes.forEach(({ label, m, mi, d, fb, unit }) => {
-        const el = document.getElementById(label);
-        if (el) el.textContent = `= ${getAxisSteps(m, mi, d, fb).toFixed(2)} ${unit}`;
-    });
-};
-
 const retriggerConversion = () => {
-    updateAxisLabels();
     if (state.gcode && !document.getElementById('canvasContainer').classList.contains('hidden')) {
         renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, -1, state.binaryPackets);
     }
@@ -1710,32 +1739,38 @@ cuttingSpeedInput.addEventListener('input', (e) => { cuttingSpeedSlider.value = 
 
 const maxStepsSlider = document.getElementById('maxStepsSlider');
 const maxStepsInput = document.getElementById('maxStepsInput');
-const maxSpeedSlider = document.getElementById('maxSpeedSlider');
-const maxSpeedInput = document.getElementById('maxSpeedInput');
+const maxLinearSpeedSlider = document.getElementById('maxLinearSpeedSlider');
+const maxLinearSpeedInput = document.getElementById('maxLinearSpeedInput');
+const maxRotationalSpeedSlider = document.getElementById('maxRotationalSpeedSlider');
+const maxRotationalSpeedInput = document.getElementById('maxRotationalSpeedInput');
 
 if (maxStepsSlider && maxStepsInput) {
     maxStepsSlider.addEventListener('input', (e) => { maxStepsInput.value = e.target.value; });
     maxStepsInput.addEventListener('input', (e) => { maxStepsSlider.value = e.target.value; });
 }
-if (maxSpeedSlider && maxSpeedInput) {
-    maxSpeedSlider.addEventListener('input', (e) => { maxSpeedInput.value = e.target.value; });
-    maxSpeedInput.addEventListener('input', (e) => { maxSpeedSlider.value = e.target.value; });
+if (maxLinearSpeedSlider && maxLinearSpeedInput) {
+    maxLinearSpeedSlider.addEventListener('input', (e) => { maxLinearSpeedInput.value = e.target.value; });
+    maxLinearSpeedInput.addEventListener('input', (e) => { maxLinearSpeedSlider.value = e.target.value; });
+}
+if (maxRotationalSpeedSlider && maxRotationalSpeedInput) {
+    maxRotationalSpeedSlider.addEventListener('input', (e) => { maxRotationalSpeedInput.value = e.target.value; });
+    maxRotationalSpeedInput.addEventListener('input', (e) => { maxRotationalSpeedSlider.value = e.target.value; });
 }
 
 // Watch all config inputs for changes
 [
     segmentLengthSlider, segmentLengthInput, cuttingSpeedSlider, cuttingSpeedInput,
-    maxStepsSlider, maxStepsInput, maxSpeedSlider, maxSpeedInput,
+    maxStepsSlider, maxStepsInput, maxLinearSpeedSlider, maxLinearSpeedInput,
+    maxRotationalSpeedSlider, maxRotationalSpeedInput,
     'bedWidthInput', 'bedHeightInput', 'gantryWidthInput', 'gantryHeightInput',
-    'xRs485Id', 'xMotorSteps', 'xMicrosteps', 'xMmPerRev',
-    'yRs485Id', 'yMotorSteps', 'yMicrosteps', 'yMmPerRev',
-    'zRs485Id', 'zMotorSteps', 'zMicrosteps', 'zMmPerRev',
-    'aRs485Id', 'aMotorSteps', 'aMicrosteps', 'aDegPerRev',
+    'xRs485Id', 'xStepsPerMM',
+    'yRs485Id', 'yStepsPerMM',
+    'zRs485Id', 'zStepsPerMM',
+    'aRs485Id', 'aStepsPerDeg',
 ].forEach(idOrEl => {
     const el = typeof idOrEl === 'string' ? document.getElementById(idOrEl) : idOrEl;
     if (el) {
         el.addEventListener('change', retriggerConversion);
-        el.addEventListener('input', updateAxisLabels);
     }
 });
 
@@ -1750,8 +1785,7 @@ if (simModeCheckbox) {
     });
 }
 
-// Initialize labels on load
-updateAxisLabels();
+// No initial axis labels to update anymore
 
 // Modal Logic
 btnSettings.addEventListener('click', () => {
@@ -1863,10 +1897,10 @@ function sendJog(dx, dy, dz, da = 0) {
     }
 
     // 1. Get current scaling factors from UI
-    const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
-    const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
-    const zStepsPerMM = getAxisSteps('zMotorSteps', 'zMicrosteps', 'zMmPerRev', 800);
-    const aStepsPerDeg = getAxisSteps('aMotorSteps', 'aMicrosteps', 'aDegPerRev', 92.44);
+    const xStepsPerMM = getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X);
+    const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
+    const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
+    const aStepsPerDeg = getAxisSteps('aStepsPerDeg', DEFAULT_STEPS.A);
     const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
 
     // 2. Calculate relative steps
@@ -1922,17 +1956,65 @@ document.getElementById('jogZMinus').addEventListener('click', () => sendJog(0, 
 document.getElementById('jogAPlus').addEventListener('click', () => sendJog(0, 0, 0, jogState.step));
 document.getElementById('jogAMinus').addEventListener('click', () => sendJog(0, 0, 0, -jogState.step));
 
-// Home button — sends the same 'home' command as "Go to Zero"
-document.getElementById('jogHome').addEventListener('click', () => {
-    if (!connection.connected) { log('Jog: Not connected.', 'error'); return; }
-    connection.send('home', true);
-    // Reset dead-reckoning position to zero after homing
-    jogState.posX = 0; jogState.posY = 0; jogState.posZ = 0; jogState.posA = 0;
-    document.getElementById('jogPosX').textContent = '0.00';
-    document.getElementById('jogPosY').textContent = '0.00';
-    document.getElementById('jogPosZ').textContent = '0.00';
-    document.getElementById('jogPosA').textContent = '0.00';
-});
+/**
+ * GO TO ZERO ("Home")
+ * This firmware has NO homing cycle — there is no `home` command and no limit
+ * switches. Origin is established purely by `setorigin`. So "Home" returns the
+ * gantry to (0,0) with a safe Z-retract using binary MicroSegments (the same
+ * pattern as park), then issues `setorigin` to zero the Pico's authoritative
+ * position counter. Dead-reckoning converges to ~0 as the move is ACKed.
+ * (Assessment R2 / fix F2.)
+ */
+function goToZero() {
+    const isSimMode = document.getElementById('simModeCheckbox')?.checked;
+    if (!connection.connected && !isSimMode) { log('Home: Not connected.', 'error'); return; }
+    if (state.isSending) { log('Home: a move/job is already running.', 'warning'); return; }
+
+    const xStepsPerMM = getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X);
+    const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
+    const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
+    const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
+
+    const cmds = [];
+
+    // Step 1: retract Z to a safe height (5 mm above bed) before traversing.
+    const zTarget = 5;
+    if (jogState.posZ < zTarget) {
+        const relZ = Math.round(-(zTarget - jogState.posZ) * zStepsPerMM); // Up = negative Z steps
+        if (relZ !== 0) {
+            const stepVz = Math.max(1, Math.round(feedRate * zStepsPerMM));
+            const interval = Math.max(1, Math.min(Math.round(150_000_000 / stepVz), 150_000_000));
+            cmds.push(packMicrosegment(0, 0, relZ, 0, interval, 0x01, 0));
+        }
+    }
+
+    // Step 2: traverse X/Y back to the origin.
+    const relX = Math.round(-jogState.posX * xStepsPerMM);
+    const relY = Math.round(-jogState.posY * yStepsPerMM);
+    if (relX !== 0 || relY !== 0) {
+        const maxAbsStep = Math.max(Math.abs(relX), Math.abs(relY));
+        const spu = maxAbsStep === Math.abs(relX) ? xStepsPerMM : yStepsPerMM;
+        const interval = Math.max(1, Math.min(Math.round(150_000_000 / (feedRate * spu)), 150_000_000));
+        cmds.push(packMicrosegment(relX, relY, 0, 0, interval, 0, 0));
+    }
+
+    log('Home: returning to origin (0,0) then re-zeroing position...', 'info');
+    state.activeRunType = 'jog';
+    state.isSending = true;
+    setStartButtonState(true, false);
+
+    // Stream the move (if any) then `setorigin` to re-establish the firmware zero.
+    if (cmds.length > 0) {
+        state.binaryPackets = cmds;
+        state.gcodeQueue = ['__BINARY_STREAM__', 'setorigin'];
+    } else {
+        state.gcodeQueue = ['setorigin'];
+    }
+    executeNextTextCommand();
+}
+
+// Home button — return to origin (0,0) and re-zero via setorigin.
+document.getElementById('jogHome').addEventListener('click', goToZero);
 
 // Reset position display
 document.getElementById('jogResetPos').addEventListener('click', () => {
@@ -2023,8 +2105,8 @@ function calculateActiveZones(gcode, packets = []) {
     const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;
     const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
 
-    const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
-    const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
+    const xStepsPerMM = getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X);
+    const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
 
     lines.forEach(line => {
         line = line.split(';')[0].trim().toUpperCase();

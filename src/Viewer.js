@@ -120,16 +120,13 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
                 const interval = parseInt(parts[5]) || 0;
                 const flags = parseInt(parts[6]) || 0;
 
-                const axisSteps = (mId, miId, dId, fallback) => {
-                    const m  = parseFloat(document.getElementById(mId)?.value)  || 200;
-                    const mi = parseFloat(document.getElementById(miId)?.value) || 1;
-                    const d  = parseFloat(document.getElementById(dId)?.value)  || 1;
-                    const v  = (m * mi) / d;
+                const axisSteps = (inputId, fallback) => {
+                    const v = parseFloat(document.getElementById(inputId)?.value);
                     return (isNaN(v) || v <= 0) ? fallback : v;
                 };
 
-                const stepsPerMM_X = axisSteps('xMotorSteps','xMicrosteps','xMmPerRev', 160);
-                const stepsPerMM_Y = axisSteps('yMotorSteps','yMicrosteps','yMmPerRev', 160);
+                const stepsPerMM_X = axisSteps('xStepsPerMM', 160);
+                const stepsPerMM_Y = axisSteps('yStepsPerMM', 160);
 
                 const mmX = dx / stepsPerMM_X;
                 const mmY = dy / stepsPerMM_Y;
@@ -161,16 +158,13 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
                 const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
                 
                 // Get Steps/MM to convert back to physical millimeters for the canvas
-                const axisSteps = (mId, miId, dId, fallback) => {
-                    const m  = parseFloat(document.getElementById(mId)?.value)  || 200;
-                    const mi = parseFloat(document.getElementById(miId)?.value) || 1;
-                    const d  = parseFloat(document.getElementById(dId)?.value)  || 1;
-                    const v  = (m * mi) / d;
+                const axisSteps = (inputId, fallback) => {
+                    const v = parseFloat(document.getElementById(inputId)?.value);
                     return (isNaN(v) || v <= 0) ? fallback : v;
                 };
 
-                const stepsPerMM_X = axisSteps('xMotorSteps','xMicrosteps','xMmPerRev', 160);
-                const stepsPerMM_Y = axisSteps('yMotorSteps','yMicrosteps','yMmPerRev', 160);
+                const stepsPerMM_X = axisSteps('xStepsPerMM', 160);
+                const stepsPerMM_Y = axisSteps('yStepsPerMM', 160);
 
                 let dx = 0, dy = 0, zVal = 0;
                 
@@ -251,15 +245,13 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
 
     // --- 3. Decode binary packets (primary path source for SVG jobs) ---
     if (packets && packets.length > 0) {
-        const axisSteps = (mId, miId, dId, fallback) => {
-            const m  = parseFloat(document.getElementById(mId)?.value)  || 200;
-            const mi = parseFloat(document.getElementById(miId)?.value) || 1;
-            const d  = parseFloat(document.getElementById(dId)?.value)  || 1;
-            const v  = (m * mi) / d;
+        const axisSteps = (inputId, fallback) => {
+            const v = parseFloat(document.getElementById(inputId)?.value);
             return (isNaN(v) || v <= 0) ? fallback : v;
         };
-        const spmX = axisSteps('xMotorSteps','xMicrosteps','xMmPerRev', 160);
-        const spmY = axisSteps('yMotorSteps','yMicrosteps','yMmPerRev', 160);
+
+        const spmX = axisSteps('xStepsPerMM', 160);
+        const spmY = axisSteps('yStepsPerMM', 160);
 
         let pkCur = { x: 0, y: 0 };
         let pkPenDown = false;

@@ -216,19 +216,16 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 let segLength = segInput ? parseFloat(segInput.value) : 1.0;
                 if (isNaN(segLength) || segLength < 0.1) segLength = 0.1;
 
-                // Calculate per-axis steps using the formula: (motorSteps * microsteps) / distPerRev
-                const axisSteps = (mId, miId, dId, fallback) => {
-                    const m  = parseFloat(document.getElementById(mId)?.value)  || 200;
-                    const mi = parseFloat(document.getElementById(miId)?.value) || 1;
-                    const d  = parseFloat(document.getElementById(dId)?.value)  || 1;
-                    const v  = (m * mi) / d;
+                // Local helper for safe DOM parsing
+                function axisSteps(inputId, fallback) {
+                    const v = parseFloat(document.getElementById(inputId)?.value);
                     return (isNaN(v) || v <= 0) ? fallback : v;
-                };
+                }
 
-                const stepsPerMM_X = axisSteps('xMotorSteps','xMicrosteps','xMmPerRev',  160);
-                const stepsPerMM_Y = axisSteps('yMotorSteps','yMicrosteps','yMmPerRev',  160);
-                const stepsPerMM_Z = axisSteps('zMotorSteps','zMicrosteps','zMmPerRev',  800);
-                const stepsPerDeg_A = axisSteps('aMotorSteps','aMicrosteps','aDegPerRev', 92.44);
+                const stepsPerMM_X = axisSteps('xStepsPerMM', 160);
+                const stepsPerMM_Y = axisSteps('yStepsPerMM', 160);
+                const stepsPerMM_Z = axisSteps('zStepsPerMM', 1200);
+                const stepsPerDeg_A = axisSteps('aStepsPerDeg', 120);
 
                 const cuttingSpeedInput = document.getElementById('cuttingSpeedInput');
                 const cuttingSpeed = cuttingSpeedInput ? parseFloat(cuttingSpeedInput.value) : 30;
@@ -241,8 +238,10 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 const maxStepsInput = document.getElementById('maxStepsInput');
                 const maxSteps = maxStepsInput ? parseInt(maxStepsInput.value) : 30000;
                 
-                const maxSpeedInput = document.getElementById('maxSpeedInput');
-                const maxSpeed = maxSpeedInput ? parseInt(maxSpeedInput.value) : 30000;
+                const maxLinearSpeedInput = document.getElementById('maxLinearSpeedInput');
+                const maxRotationalSpeedInput = document.getElementById('maxRotationalSpeedInput');
+                const maxLinearSpeed = maxLinearSpeedInput ? parseInt(maxLinearSpeedInput.value) : 200;
+                const maxRotationalSpeed = maxRotationalSpeedInput ? parseInt(maxRotationalSpeedInput.value) : 720;
 
                 // flipX/flipY are resolved above (with canvas-source override),
                 // so do NOT re-read them here — they shadow the corrected values.
@@ -253,7 +252,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                     flipY: flipY,
                     feedRate: cuttingSpeed, 
                     maxSteps: maxSteps,
-                    maxSpeed: maxSpeed,
+                    maxLinearSpeed: maxLinearSpeed,
+                    maxRotationalSpeed: maxRotationalSpeed,
                     scale: scale,
                     offsetX: finalOffsetX,
                     offsetY: finalOffsetY,

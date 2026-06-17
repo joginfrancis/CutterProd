@@ -537,13 +537,21 @@
                 </div>
 
                 <div class="form-group">
-                    <label for="maxSpeedInput">Max Speed (SPS):</label>
+                    <label for="maxLinearSpeedInput">Max Linear Speed (mm/sec):</label>
                     <div class="slider-input-group">
-                        <input type="range" id="maxSpeedSlider" value="30000" step="1000" min="1000" max="65535">
-                        <input type="number" id="maxSpeedInput" value="30000" step="1" min="1000" max="65535">
+                        <input type="range" id="maxLinearSpeedSlider" value="200" step="10" min="10" max="1000">
+                        <input type="number" id="maxLinearSpeedInput" value="200" step="1" min="10" max="1000">
                     </div>
-                    <span class="help-text">Limit Steps-Per-Second. Feedrates are scaled down to ensure synchronization
-                        if exceeded.</span>
+                    <span class="help-text">Maximum physical speed for X, Y, and Z axes to prevent stalling.</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="maxRotationalSpeedInput">Max Rotational Speed (deg/sec):</label>
+                    <div class="slider-input-group">
+                        <input type="range" id="maxRotationalSpeedSlider" value="720" step="10" min="10" max="2000">
+                        <input type="number" id="maxRotationalSpeedInput" value="720" step="1" min="10" max="2000">
+                    </div>
+                    <span class="help-text">Maximum physical speed for the A axis (tangential rotation).</span>
                 </div>
                 <hr class="modal-divider">
 
@@ -582,90 +590,57 @@
                 <hr class="modal-divider">
 
                 <div class="axis-group">
-                    <div class="axis-group-label">X-Axis &nbsp;<span class="axis-calc" id="xStepsLabel"></span></div>
+                    <div class="axis-group-label">X-Axis</div>
                     <div class="axis-row">
                         <div class="axis-cell">
                             <input type="number" id="xRs485Id" value="3" step="1" min="1" max="255">
                             <span>RS485 ID</span>
                         </div>
                         <div class="axis-cell">
-                            <input type="number" id="xMotorSteps" value="200" step="1" min="1">
-                            <span>Steps/Rev</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="xMicrosteps" value="32" step="1" min="1">
-                            <span>Microsteps</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="xMmPerRev" value="40" step="1" min="1">
-                            <span>MM/Rev</span>
+                            <input type="number" id="xStepsPerMM" value="160" step="0.1" min="0.1">
+                            <span>Steps/MM</span>
                         </div>
                     </div>
                 </div>
 
                 <div class="axis-group">
-                    <div class="axis-group-label">Y-Axis &nbsp;<span class="axis-calc" id="yStepsLabel"></span></div>
+                    <div class="axis-group-label">Y-Axis</div>
                     <div class="axis-row">
                         <div class="axis-cell">
                             <input type="number" id="yRs485Id" value="2" step="1" min="1" max="255">
                             <span>RS485 ID</span>
                         </div>
                         <div class="axis-cell">
-                            <input type="number" id="yMotorSteps" value="200" step="1" min="1">
-                            <span>Steps/Rev</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="yMicrosteps" value="32" step="1" min="1">
-                            <span>Microsteps</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="yMmPerRev" value="40" step="1" min="1">
-                            <span>MM/Rev</span>
+                            <input type="number" id="yStepsPerMM" value="160" step="0.1" min="0.1">
+                            <span>Steps/MM</span>
                         </div>
                     </div>
                 </div>
 
                 <div class="axis-group">
-                    <div class="axis-group-label">Z-Axis &nbsp;<span class="axis-calc" id="zStepsLabel"></span></div>
+                    <div class="axis-group-label">Z-Axis</div>
                     <div class="axis-row">
                         <div class="axis-cell">
                             <input type="number" id="zRs485Id" value="1" step="1" min="1" max="255">
                             <span>RS485 ID</span>
                         </div>
                         <div class="axis-cell">
-                            <input type="number" id="zMotorSteps" value="200" step="1" min="1">
-                            <span>Steps/Rev</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="zMicrosteps" value="32" step="1" min="1">
-                            <span>Microsteps</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="zMmPerRev" value="8" step="0.1" min="0.01">
-                            <span>MM/Rev</span>
+                            <input type="number" id="zStepsPerMM" value="1200" step="0.1" min="0.1">
+                            <span>Steps/MM</span>
                         </div>
                     </div>
                 </div>
 
                 <div class="axis-group">
-                    <div class="axis-group-label">Rotary (A) &nbsp;<span class="axis-calc" id="aStepsLabel"></span>
-                    </div>
+                    <div class="axis-group-label">Rotary (A)</div>
                     <div class="axis-row">
                         <div class="axis-cell">
                             <input type="number" id="aRs485Id" value="4" step="1" min="1" max="255">
                             <span>RS485 ID</span>
                         </div>
                         <div class="axis-cell">
-                            <input type="number" id="aMotorSteps" value="200" step="1" min="1">
-                            <span>Steps/Rev</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="aMicrosteps" value="16" step="1" min="1">
-                            <span>Microsteps</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="aDegPerRev" value="28.7" step="0.01" min="0.01">
-                            <span>Deg/Rev</span>
+                            <input type="number" id="aStepsPerDeg" value="120" step="0.1" min="0.1">
+                            <span>Steps/Deg</span>
                         </div>
                     </div>
                 </div>

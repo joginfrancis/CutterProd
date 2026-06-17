@@ -142,20 +142,23 @@ Open **http://localhost:3000** in a Chromium-based browser (Chrome, Edge — req
 
 ## Output Format
 
-The first line is always `enable all 1` to engage stepper drivers. All subsequent lines:
+The UI streams **Binary MicroSegments** over Web Serial.
+Each trajectory segment is exactly 26 bytes and encapsulates a 4-axis synchronized move:
 
-```
-move <count> <RS485 IDs...> <steps...> <SPS...>
-```
+| Byte | Field | Description |
+|:---|:---|:---|
+| 0 | `magic` | Always `0xAB` |
+| 1-4 | `dx` | X-axis step delta (Int32, Little Endian) |
+| 5-8 | `dy` | Y-axis step delta (Int32, LE) |
+| 9-12 | `dz` | Z-axis step delta (Int32, LE) |
+| 13-16| `da` | A-axis step delta (Int32, LE) |
+| 17-20| `interval` | Delay ticks between steps (UInt32, LE). $150MHz / rate$ |
+| 21 | `flags` | Bit 0 = 1 to enable stepper output |
+| 22 | `seq` | Rolling sequence number (0-255) for duplicate ACK dropping |
+| 23-24| `pad` | Reserved |
+| 25 | `crc8` | CRC-8 over bytes 0-24 (poly `0x8C`) |
 
-| Field | Description |
-|:---|:---|
-| `count` | Number of motors moving in this segment |
-| `RS485 IDs` | Space-separated motor IDs (e.g. `3 2 1 4` for X, Y, Z, A) |
-| `steps` | Signed relative step deltas for each motor |
-| `SPS` | Steps-Per-Second velocity for each motor, calculated for synchronous arrival |
-
-**Example:** `move 3 3 2 1 1600 1600 6400 4800 4800 24000`
+Flow control uses Go-Back-N with a window size of 16. The Pico responds to each packet with `ACK` (`0xAA` + seq) or `NACK` (`0xBB` + reason).
 
 ---
 
@@ -163,10 +166,15 @@ move <count> <RS485 IDs...> <steps...> <SPS...>
 
 | Command | Description | Format |
 |:---|:---|:---|
-| `move` | Trajectory segment / manual jog | `move <count> <ids…> <steps…> <sps…>` |
-| `home` | Return all axes to zero | `home` |
+| Binary Move | Main trajectory packet | 26-byte `0xAB...` |
+| `setorigin` | Establish local zero | `setorigin` |
+| `stop` | Emergency abort | `stop` |
+| `status` | Query buffer depth | `status` |
 | `enable` | Enable or disable motors | `enable all <0\|1>` |
 | `ping` | Query motor status | `ping <id>` |
+| `seqreset` | Reset Go-Back-N counter | `seqreset` |
+| `suction` | Toggle suction fan | `suction <0\|1>` |
+| `servo` | Toggle a pneumatic valve | `servo <1-6> <0\|1>` |
 
 ---
 
