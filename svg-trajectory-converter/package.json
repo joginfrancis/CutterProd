@@ -1,0 +1,27 @@
+{
+  "name": "svg-trajectory-converter",
+  "version": "1.1.0",
+  "description": "Convert SVG paths to physical CNC/stepper trajectories",
+  "main": "index.cjs",
+  "module": "index.js",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "require": "./index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": [
+    "svg",
+    "trajectory",
+    "gcode",
+    "stepper",
+    "cnc",
+    "vector"
+  ],
+  "author": "Nikhil Nair",
+  "license": "MIT"
+}

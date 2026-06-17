@@ -1,0 +1,20 @@
+{
+  "name": "cutterprod",
+  "version": "1.0.0",
+  "description": "Unified platform for CutterProd WiFi Controller & UrumiCam Vision System",
+  "main": "start.js",
+  "scripts": {
+    "start": "node start.js"
+  },
+  "keywords": [
+    "cutter",
+    "wifi",
+    "gantry",
+    "vision"
+  ],
+  "author": "Antigravity AI",
+  "license": "ISC",
+  "dependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

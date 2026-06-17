@@ -1,0 +1,9 @@
+flask>=3.0
+flask-socketio>=5.3
+pyserial>=3.5
+opencv-python-headless>=4.8
+numpy>=1.24
+scipy>=1.11
+# Pi-only dependencies (comment out for Windows development):
+# picamera2>=0.3
+# RPi.GPIO>=0.7

@@ -1,0 +1,29 @@
+# Dependency directories
+node_modules/
+jspm_packages/
+web_modules/
+
+# UrumiCam specific ignores
+UrumiCam/**/__pycache__/
+UrumiCam/venv/
+UrumiCam/.venv/
+UrumiCam/static/uploads/*
+!UrumiCam/static/uploads/.gitkeep
+UrumiCam/scans/*
+!UrumiCam/scans/.gitkeep
+
+# Handoff and temporary documentation
+handoff.md
+explainer.md
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Editor and OS specific files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
