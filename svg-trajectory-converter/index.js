@@ -226,6 +226,8 @@ class SvgConverter {
 
     // Profiling Config
     this.acceleration = options.acceleration !== undefined ? options.acceleration : 1000.0;
+    this.accelerationZ = options.accelerationZ !== undefined ? options.accelerationZ : 500.0;
+    this.accelerationA = options.accelerationA !== undefined ? options.accelerationA : 3000.0;
     this.junctionDeviation = options.junctionDeviation !== undefined ? options.junctionDeviation : 0.05;
     
     // Limits
@@ -1168,10 +1170,12 @@ class SvgConverter {
                   const vAvg = Math.max(0.1, (seg.entrySpeed + seg.exitSpeed) / 2);
                   duration = length / vAvg;
               } else if (relativeZStep !== 0) {
-                  // Z-only motion segment
-                  const stepVz = Math.abs(seg.feedRate * this.stepsPerMM_Z);
-                  if (stepVz > 0) {
-                      duration = Math.abs(relativeZStep) / stepVz;
+                  // Z-only motion segment with trapezoidal acceleration ramp from 0 to 0
+                  const sZ = Math.abs(relativeZStep) / this.stepsPerMM_Z;
+                  const vMax = Math.min(seg.feedRate, this.maxZSpeed);
+                  if (sZ > 0 && vMax > 0) {
+                      const vPeak = Math.max(0.1, Math.min(vMax, Math.sqrt(this.accelerationZ * sZ)));
+                      duration = (vPeak / this.accelerationZ) + (sZ / vPeak);
                   }
               }
 
@@ -1179,9 +1183,12 @@ class SvgConverter {
                   if (duration > 0) {
                       // A rotates concurrently with other axes
                   } else {
-                      // A-only motion segment
-                      const stepVa = this.stepsPerDeg_A * this.maxRotationalSpeed;
-                      duration = Math.abs(relativeAStep) / stepVa;
+                      // A-only motion segment with trapezoidal acceleration ramp from 0 to 0
+                      const sA = Math.abs(relativeAStep) / this.stepsPerDeg_A;
+                      if (sA > 0) {
+                          const vPeak = Math.max(0.1, Math.min(this.maxRotationalSpeed, Math.sqrt(this.accelerationA * sA)));
+                          duration = (vPeak / this.accelerationA) + (sA / vPeak);
+                      }
                   }
               }
 

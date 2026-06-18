@@ -1794,6 +1794,10 @@ const maxRotationalSpeedSlider = document.getElementById('maxRotationalSpeedSlid
 const maxRotationalSpeedInput = document.getElementById('maxRotationalSpeedInput');
 const accelerationSlider = document.getElementById('accelerationSlider');
 const accelerationInput = document.getElementById('accelerationInput');
+const accelerationZSlider = document.getElementById('accelerationZSlider');
+const accelerationZInput = document.getElementById('accelerationZInput');
+const accelerationASlider = document.getElementById('accelerationASlider');
+const accelerationAInput = document.getElementById('accelerationAInput');
 const junctionDeviationSlider = document.getElementById('junctionDeviationSlider');
 const junctionDeviationInput = document.getElementById('junctionDeviationInput');
 
@@ -1813,6 +1817,14 @@ if (accelerationSlider && accelerationInput) {
     accelerationSlider.addEventListener('input', (e) => { accelerationInput.value = e.target.value; });
     accelerationInput.addEventListener('input', (e) => { accelerationSlider.value = e.target.value; });
 }
+if (accelerationZSlider && accelerationZInput) {
+    accelerationZSlider.addEventListener('input', (e) => { accelerationZInput.value = e.target.value; });
+    accelerationZInput.addEventListener('input', (e) => { accelerationZSlider.value = e.target.value; });
+}
+if (accelerationASlider && accelerationAInput) {
+    accelerationASlider.addEventListener('input', (e) => { accelerationAInput.value = e.target.value; });
+    accelerationAInput.addEventListener('input', (e) => { accelerationASlider.value = e.target.value; });
+}
 if (junctionDeviationSlider && junctionDeviationInput) {
     junctionDeviationSlider.addEventListener('input', (e) => { junctionDeviationInput.value = e.target.value; });
     junctionDeviationInput.addEventListener('input', (e) => { junctionDeviationSlider.value = e.target.value; });
@@ -1823,7 +1835,10 @@ if (junctionDeviationSlider && junctionDeviationInput) {
     segmentLengthSlider, segmentLengthInput, cuttingSpeedSlider, cuttingSpeedInput,
     maxXYSpeedSlider, maxXYSpeedInput, maxZSpeedSlider, maxZSpeedInput,
     maxRotationalSpeedSlider, maxRotationalSpeedInput,
-    accelerationSlider, accelerationInput, junctionDeviationSlider, junctionDeviationInput,
+    accelerationSlider, accelerationInput,
+    accelerationZSlider, accelerationZInput,
+    accelerationASlider, accelerationAInput,
+    junctionDeviationSlider, junctionDeviationInput,
     'bedWidthInput', 'bedHeightInput', 'gantryWidthInput', 'gantryHeightInput',
     'xRs485Id', 'xStepsPerMM',
     'yRs485Id', 'yStepsPerMM',

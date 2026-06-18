@@ -556,12 +556,30 @@
                 </div>
 
                 <div class="form-group">
-                    <label for="accelerationInput">Max Acceleration (mm/sec²):</label>
+                    <label for="accelerationInput">Max XY Acceleration (mm/sec²):</label>
                     <div class="slider-input-group">
                         <input type="range" id="accelerationSlider" value="1000" step="50" min="100" max="5000">
                         <input type="number" id="accelerationInput" value="1000" step="1" min="100" max="5000">
                     </div>
-                    <span class="help-text">Maximum acceleration to ramp speed up/down smoothly.</span>
+                    <span class="help-text">Maximum XY acceleration to ramp speed up/down smoothly.</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="accelerationZInput">Max Z Acceleration (mm/sec²):</label>
+                    <div class="slider-input-group">
+                        <input type="range" id="accelerationZSlider" value="500" step="50" min="50" max="2000">
+                        <input type="number" id="accelerationZInput" value="500" step="1" min="50" max="2000">
+                    </div>
+                    <span class="help-text">Maximum acceleration for Z axis plunge/lift.</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="accelerationAInput">Max Rotational Acceleration (deg/sec²):</label>
+                    <div class="slider-input-group">
+                        <input type="range" id="accelerationASlider" value="3000" step="100" min="100" max="10000">
+                        <input type="number" id="accelerationAInput" value="3000" step="1" min="100" max="10000">
+                    </div>
+                    <span class="help-text">Maximum acceleration for tangential knife rotations.</span>
                 </div>
 
                 <div class="form-group">
