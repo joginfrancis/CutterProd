@@ -42,12 +42,12 @@ import { packMicrosegment } from './BinaryUtils.js';
 /**
  * Canonical per-axis resolution fallbacks — these MUST match the firmware's
  * machine config (Urumi-Fw/pipeline/stages/config.py): X/Y 160 steps/mm,
- * Z 1200 steps/mm, A 120 steps/deg. Used only when the Settings inputs are
+ * Z 400 steps/mm, A 120 steps/deg. Used only when the Settings inputs are
  * empty; the UI Settings remain the live source of truth. Centralised here so
  * the three places that previously hard-coded mismatched defaults (80 / 800 /
  * 92.44) can no longer drift. (Assessment R3 / fix F3.)
  */
-const DEFAULT_STEPS = { X: 160, Y: 160, Z: 1200, A: 120 };
+const DEFAULT_STEPS = { X: 160, Y: 160, Z: 400, A: 103 };
 
 /**
  * stampSeq — copies a 26-byte MicroSegment packet, stamps the rolling
@@ -125,7 +125,9 @@ const state = {
     stallChecker: null,      // Interval handle for stall detection
     isWaitingForDrain: false, // Are we waiting for the Pico buffer to drain?
     statusPollInterval: null, // Interval handle for status polling
-    simTimeout: null         // Simulation timeout handle
+    simTimeout: null,         // Simulation timeout handle
+    expectedPktSeq: 0,       // Expected Pico ACK sequence number (F1)
+    isWaitingForBuffer: false // Is waiting for buffer space to clear (F4)
 };
 
 let wakeLock = null; // Global reference for the Screen Wake Lock API
@@ -154,19 +156,18 @@ const connection = new MachineConnection({
     onAck: (seq) => {
         if (!state.isSending) return;
 
-        // Ignore responses that arrive while a Go-Back-N rewind is pending: they
-        // are stale (for packets we are about to resend). This mirrors sender.py's
-        // _flush_responses() — without it, duplicate-skip ACKs would race `base`
-        // ahead of what the Pico actually executed, silently losing motion and
-        // falsely reporting completion. (Assessment R1 / fix F1.)
-        if (state.isGoBackWaiting) return;
+        // Reject stale skip-ACKs that arrive after a Go-Back-N rewind has settled.
+        // During rewind, the Pico skip-ACKs the remaining in-flight window. Those
+        // stale skip-ACKs will have seq numbers below our updated expectedPktSeq.
+        // Advancing by one per valid ACK is exactly what sender.py does and keeps
+        // base aligned with the firmware's expectedSeq. (F1)
+        if (state.isGoBackWaiting || seq < state.expectedPktSeq) {
+            return;
+        }
 
-        // The firmware emits exactly one ACK per received packet and processes
-        // them strictly in order, so each ACK confirms the oldest in-flight packet
-        // (`base`). We deliberately ignore the echoed seq value: after any
-        // duplicate-skip ACK it is the Pico's own ACK counter, NOT the packet
-        // index. Advancing by one per ACK is exactly what sender.py does
-        // (`base += 1`) and keeps `base` aligned with the firmware's expectedSeq.
+        // Accept the valid ACK and update expected sequence count
+        state.expectedPktSeq = seq + 1;
+
         if (state.base < state.pendingPackets.length) {
             updatePositionFromPacket(state.pendingPackets[state.base]);
             state.base++;
@@ -209,6 +210,20 @@ const connection = new MachineConnection({
             log(`CRC Error (reason 0x01). Rewinding to base ${state.base}...`, 'warning');
             goBack(reason, 5); // 5ms settle delay
         } else if (reason === 0x02) { // NACK_FULL (buffer full backpressure)
+            if (state.isWaitingForBuffer) return; // Already waiting
+            log(`Buffer Full NACK (reason 0x02). Waiting for buffer space...`, 'info');
+            state.isWaitingForBuffer = true;
+
+            // Send status query to check buffer immediately
+            connection.send('status');
+            if (!state.statusPollInterval) {
+                state.statusPollInterval = setInterval(() => {
+                    if (state.isSending && state.isWaitingForBuffer) {
+                        connection.send('status');
+                    }
+                }, 100); // Poll status every 100ms
+            }
+
             goBack(reason, 50); // 50ms backpressure delay
         }
     },
@@ -220,8 +235,18 @@ const connection = new MachineConnection({
         }
     },
 
-    // When the machine is ready after buffer full (legacy text stream callback, ignored in binary streaming)
-    onReady: () => { },
+    // When the machine is ready after buffer full (Pico signals buffer drained below watermark)
+    onReady: () => {
+        if (state.isSending && state.isWaitingForBuffer) {
+            log('Pico signaled READY (buffer drained). Resuming transmission.', 'success');
+            state.isWaitingForBuffer = false;
+            if (state.statusPollInterval) {
+                clearInterval(state.statusPollInterval);
+                state.statusPollInterval = null;
+            }
+            sendWindow();
+        }
+    },
     // When the machine says nope (legacy text stream callback, ignored in binary streaming)
     onNope: () => { },
 
@@ -261,6 +286,17 @@ function handleStatusResponse(msg) {
                 } else {
                     finishJob();
                 }
+            }
+        } else if (state.isWaitingForBuffer) {
+            // Watchdog (F4): resume when buffer drains below low-watermark (384/512)
+            if (count < 384) {
+                log(`Buffer drained to ${count}/512. Resuming transmission.`, 'success');
+                state.isWaitingForBuffer = false;
+                if (state.statusPollInterval) {
+                    clearInterval(state.statusPollInterval);
+                    state.statusPollInterval = null;
+                }
+                sendWindow();
             }
         }
     }
@@ -319,12 +355,20 @@ function goBack(reason, delayMs) {
     if (state.goBackTimeout) {
         clearTimeout(state.goBackTimeout);
     }
+    
+    // Account for the in-flight packets that will be skip-ACKed by the Pico.
+    // Advance the expected ACK sequence by the size of the skipped in-flight window.
+    const inFlight = state.nextSend - state.base;
+    if (inFlight > 0) {
+        state.expectedPktSeq += (inFlight - 1);
+    }
+    state.nextSend = state.base;
+
     state.isGoBackWaiting = true;
     state.goBackTimeout = setTimeout(() => {
         state.goBackTimeout = null;
         state.isGoBackWaiting = false;
         if (state.isSending) {
-            state.nextSend = state.base;
             state.retriesCount++;
             sendWindow();
         }
@@ -335,7 +379,7 @@ function goBack(reason, delayMs) {
  * Sends a sliding window of packets.
  */
 function sendWindow() {
-    if (!state.isSending || !state.isBinaryStreaming) return;
+    if (!state.isSending || !state.isBinaryStreaming || state.isWaitingForBuffer) return;
 
     const isSimMode = document.getElementById('simModeCheckbox')?.checked;
 
@@ -474,7 +518,7 @@ function startJob() {
     if (state.wasInterrupted && state.binaryPackets?.length) {
         const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
         const zUpStep = Math.round(5 * zStepsPerMM);
-        const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
+        const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 22;
         const stepVz = Math.max(1, Math.round(feedRate * zStepsPerMM));
         const interval = Math.max(1, Math.min(Math.round(150_000_000 / stepVz), 150_000_000));
         const retractPkt = stampSeq(packMicrosegment(0, 0, -zUpStep, 0, interval, 0x01, 0), 0);
@@ -558,6 +602,7 @@ function stopJob() {
     state.isBinaryStreaming = false;
     state.isWaitingForDrain = false;
     state.isGoBackWaiting = false;
+    state.isWaitingForBuffer = false;
 
     // Send stop command to machine immediately
     if (connection.connected) {
@@ -585,7 +630,7 @@ function generateParkCommands() {
     const xStepsPerMM = getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X);
     const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
     const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
-    const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
+    const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 22;
 
     // Step 1: Ensure Z-axis is retracted to a safe height (5mm above bed)
     const zTarget = 5;
@@ -748,6 +793,7 @@ function startBinaryStreaming(packets) {
 
     state.base = 0;
     state.nextSend = 0;
+    state.expectedPktSeq = 0;
     state.isBinaryStreaming = true;
     state.lastProgressTime = Date.now();
     state.crcErrors = 0;
@@ -772,6 +818,7 @@ function finishJob() {
     const hadActiveRun = shouldRunSuction();
     state.isSending = false;
     state.activeRunType = null;
+    state.isWaitingForBuffer = false;
 
     // Jobs always finish with suction off; jog/park can restore manual suction state.
     const shouldRestoreManualSuction = completedRunType !== 'job' && shouldRunSuction();
@@ -802,12 +849,14 @@ function finishJob() {
 
 // Wake Lock Re-Acquisition on Tab Visibility Change
 document.addEventListener('visibilitychange', async () => {
-    if (wakeLock !== null && document.visibilityState === 'visible' && state.isSending) {
+    if (document.visibilityState === 'visible' && state.isSending) {
         try {
-            wakeLock = await navigator.wakeLock.request('screen');
-            log('Wake Lock re-acquired.', 'info');
+            if (!wakeLock) {
+                wakeLock = await navigator.wakeLock.request('screen');
+                log('Wake Lock re-acquired.', 'info');
+            }
         } catch (err) {
-            log('Wake Lock re-request failed.', 'warning');
+            log('Wake Lock re-request failed: ' + err.message, 'warning');
         }
     }
 });
@@ -1901,7 +1950,7 @@ function sendJog(dx, dy, dz, da = 0) {
     const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
     const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
     const aStepsPerDeg = getAxisSteps('aStepsPerDeg', DEFAULT_STEPS.A);
-    const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
+    const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 22;
 
     // 2. Calculate relative steps
     // Note: Z-axis convention is positive for DOWN, so we negate dz (Up is positive)
@@ -1973,7 +2022,7 @@ function goToZero() {
     const xStepsPerMM = getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X);
     const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
     const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
-    const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
+    const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 22;
 
     const cmds = [];
 

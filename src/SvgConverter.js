@@ -232,6 +232,13 @@ class SvgConverter {
     // Limits based on RP2040 capabilities and protocol
     this.maxSteps = Math.min(this.maxSteps, 100000);
     
+    // F5: Hard-cap speeds based on physical RS485 bandwidth limit (~80 kHz max step rate)
+    const maxLinearStepRate = 75000;
+    const maxRotationalStepRate = 75000;
+    const maxSpsPerMM = Math.max(this.stepsPerMM_X, this.stepsPerMM_Y, this.stepsPerMM_Z);
+    this.maxLinearSpeed = Math.min(this.maxLinearSpeed, maxLinearStepRate / maxSpsPerMM);
+    this.maxRotationalSpeed = Math.min(this.maxRotationalSpeed, maxRotationalStepRate / this.stepsPerDeg_A);
+    
     // Bounds
     this.bedW = options.bedW !== undefined ? options.bedW : Infinity;
     this.bedH = options.bedH !== undefined ? options.bedH : Infinity;
@@ -273,6 +280,14 @@ class SvgConverter {
     preamble.push('enable all 1');
     preamble.push('WAIT_MS:500');
 
+    const state = {
+        isPenDown: false,
+        machineX: 0,
+        machineY: 0,
+        machineZ: this.zUp,
+        machineA: this.homeAngleA
+    };
+
     if (typeof DOMParser !== 'undefined') {
         const parser = new DOMParser();
         const doc = parser.parseFromString(svgContent, "image/svg+xml");
@@ -298,14 +313,6 @@ class SvgConverter {
 
         const elements = doc.querySelectorAll('path, rect, circle, ellipse, line, polyline, polygon');
         
-        const state = {
-            isPenDown: false,
-            machineX: 0,
-            machineY: 0,
-            machineZ: this.zUp,
-            machineA: this.homeAngleA
-        };
-
         let validElements = [];
 
         elements.forEach((el, index) => {
@@ -399,13 +406,6 @@ class SvgConverter {
         });
         
     } else {
-        const state = {
-            isPenDown: false,
-            machineX: 0,
-            machineY: 0,
-            machineZ: this.zUp,
-            machineA: this.homeAngleA
-        };
         const pathRegex = /<path[^>]*\bd=[\"']([^\"']+)["']/gi;
         let match;
         let validElements = [];
@@ -443,6 +443,13 @@ class SvgConverter {
             preamble.push(`; SHAPE_END`);
         });
     }
+
+    // Return home
+    preamble.push('; --- RETURN HOME ---');
+    const returnHome = this.generateTrajectory([{ type: 'M', args: [0, 0] }], state, 'thru_cut');
+    packets.push(...returnHome.packets);
+    preamble.push(...returnHome.textLines);
+    this.emitPoint(packets, preamble, state, 0, 0, this.zUp, 0, 0, 0, this.homeAngleA);
 
     return { preamble, packets };
   }
@@ -766,7 +773,12 @@ class SvgConverter {
       let targetA = state.machineA;
       if (forcedAngle !== null) {
           targetA = ((forcedAngle % 360) + 360) % 360;
+      } else if (vx !== undefined && vy !== undefined && (Math.abs(vx) > 0.000001 || Math.abs(vy) > 0.000001)) {
+          // Use exact analytical velocity when available to eliminate aliasing/jitter
+          targetA = Math.atan2(vy, vx) * 180 / Math.PI;
+          targetA = ((targetA % 360) + 360) % 360;
       } else if (dSq >= 0.000001) {
+          // Fallback to secant approximation for tiny straight lines without velocity
           targetA = Math.atan2(dy, dx) * 180 / Math.PI;
           targetA = ((targetA % 360) + 360) % 360;
       }
@@ -851,7 +863,7 @@ class SvgConverter {
                   stepVa = Math.abs(relativeAStep) / duration;
               } else {
                   // Pure rotation
-                  stepVa = this.stepsPerDeg_A * 360; // default 360 deg/sec
+                  stepVa = this.stepsPerDeg_A * this.maxRotationalSpeed;
                   duration = Math.abs(relativeAStep) / stepVa;
               }
               stepVa = Math.max(1, Math.round(stepVa));

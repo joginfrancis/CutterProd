@@ -224,11 +224,11 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
 
                 const stepsPerMM_X = axisSteps('xStepsPerMM', 160);
                 const stepsPerMM_Y = axisSteps('yStepsPerMM', 160);
-                const stepsPerMM_Z = axisSteps('zStepsPerMM', 1200);
-                const stepsPerDeg_A = axisSteps('aStepsPerDeg', 120);
+                const stepsPerMM_Z = axisSteps('zStepsPerMM', 400);
+                const stepsPerDeg_A = axisSteps('aStepsPerDeg', 103);
 
                 const cuttingSpeedInput = document.getElementById('cuttingSpeedInput');
-                const cuttingSpeed = cuttingSpeedInput ? parseFloat(cuttingSpeedInput.value) : 30;
+                const cuttingSpeed = cuttingSpeedInput ? parseFloat(cuttingSpeedInput.value) : 22;
 
                 const idX = parseInt(document.getElementById('xRs485Id')?.value) || 3;
                 const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;

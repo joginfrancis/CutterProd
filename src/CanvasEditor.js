@@ -1136,18 +1136,30 @@ export class CanvasEditor {
 
     exportAsSVG() {
         const { bedW, bedH } = this.view;
+        const fx = x => (bedW - x);
+        const fy = y => (bedH - y);
+        
         const flatShapes = this._flattenShapes(this.shapes);
-        const paths = flatShapes
+        const elements = flatShapes
             .map(s => {
-                const d = shapeToPathD(s, bedW, bedH);
-                return d.length > 0 ? `  <path d="${d}" data-method="${s.method || 'thru_cut'}" />` : '';
+                if (s.type === 'circle') {
+                    // Export true ellipse/circle to prevent 128-point polyline aliasing
+                    const cx = fx(s.cx).toFixed(3);
+                    const cy = fy(s.cy).toFixed(3);
+                    const rx = s.rx.toFixed(3);
+                    const ry = s.ry.toFixed(3);
+                    return `  <ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" data-method="${s.method || 'thru_cut'}" />`;
+                } else {
+                    const d = shapeToPathD(s, bedW, bedH);
+                    return d.length > 0 ? `  <path d="${d}" data-method="${s.method || 'thru_cut'}" />` : '';
+                }
             })
             .filter(Boolean)
             .join('\n');
 
         return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${bedW} ${bedH}" width="${bedW}mm" height="${bedH}mm" data-source="canvas">
-<style>path { fill: none; stroke: #000; stroke-width: 1px; }</style>
-${paths}
+<style>path, ellipse { fill: none; stroke: #000; stroke-width: 1px; }</style>
+${elements}
 </svg>`;
     }
 
