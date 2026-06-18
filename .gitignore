@@ -27,3 +27,11 @@ yarn-error.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Token constraints & workspace hygiene
+*.pyc
+__pycache__/
+artifacts/**
+**/*.nc
+.pio/
+build/
