@@ -1792,6 +1792,10 @@ const maxZSpeedSlider = document.getElementById('maxZSpeedSlider');
 const maxZSpeedInput = document.getElementById('maxZSpeedInput');
 const maxRotationalSpeedSlider = document.getElementById('maxRotationalSpeedSlider');
 const maxRotationalSpeedInput = document.getElementById('maxRotationalSpeedInput');
+const accelerationSlider = document.getElementById('accelerationSlider');
+const accelerationInput = document.getElementById('accelerationInput');
+const junctionDeviationSlider = document.getElementById('junctionDeviationSlider');
+const junctionDeviationInput = document.getElementById('junctionDeviationInput');
 
 if (maxXYSpeedSlider && maxXYSpeedInput) {
     maxXYSpeedSlider.addEventListener('input', (e) => { maxXYSpeedInput.value = e.target.value; });
@@ -1805,12 +1809,21 @@ if (maxRotationalSpeedSlider && maxRotationalSpeedInput) {
     maxRotationalSpeedSlider.addEventListener('input', (e) => { maxRotationalSpeedInput.value = e.target.value; });
     maxRotationalSpeedInput.addEventListener('input', (e) => { maxRotationalSpeedSlider.value = e.target.value; });
 }
+if (accelerationSlider && accelerationInput) {
+    accelerationSlider.addEventListener('input', (e) => { accelerationInput.value = e.target.value; });
+    accelerationInput.addEventListener('input', (e) => { accelerationSlider.value = e.target.value; });
+}
+if (junctionDeviationSlider && junctionDeviationInput) {
+    junctionDeviationSlider.addEventListener('input', (e) => { junctionDeviationInput.value = e.target.value; });
+    junctionDeviationInput.addEventListener('input', (e) => { junctionDeviationSlider.value = e.target.value; });
+}
 
 // Watch all config inputs for changes
 [
     segmentLengthSlider, segmentLengthInput, cuttingSpeedSlider, cuttingSpeedInput,
     maxXYSpeedSlider, maxXYSpeedInput, maxZSpeedSlider, maxZSpeedInput,
     maxRotationalSpeedSlider, maxRotationalSpeedInput,
+    accelerationSlider, accelerationInput, junctionDeviationSlider, junctionDeviationInput,
     'bedWidthInput', 'bedHeightInput', 'gantryWidthInput', 'gantryHeightInput',
     'xRs485Id', 'xStepsPerMM',
     'yRs485Id', 'yStepsPerMM',

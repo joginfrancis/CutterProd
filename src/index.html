@@ -554,6 +554,24 @@
                     </div>
                     <span class="help-text">Maximum physical speed for the A axis (tangential rotation).</span>
                 </div>
+
+                <div class="form-group">
+                    <label for="accelerationInput">Max Acceleration (mm/sec²):</label>
+                    <div class="slider-input-group">
+                        <input type="range" id="accelerationSlider" value="1000" step="50" min="100" max="5000">
+                        <input type="number" id="accelerationInput" value="1000" step="1" min="100" max="5000">
+                    </div>
+                    <span class="help-text">Maximum acceleration to ramp speed up/down smoothly.</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="junctionDeviationInput">Junction Deviation (mm):</label>
+                    <div class="slider-input-group">
+                        <input type="range" id="junctionDeviationSlider" value="0.05" step="0.01" min="0.01" max="0.5">
+                        <input type="number" id="junctionDeviationInput" value="0.05" step="0.01" min="0.01" max="0.5">
+                    </div>
+                    <span class="help-text">Controls cornering speed. Lower values are slower and sharper.</span>
+                </div>
                 <hr class="modal-divider">
 
                 <div class="axis-group">

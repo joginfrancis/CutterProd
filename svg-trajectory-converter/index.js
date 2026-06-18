@@ -66,48 +66,9 @@
  * @description Main entry point and classes for parsing SVG and generating CNC trajectories.
  */
 
-/**
- * Compute CRC-8 using polynomial 0x8C.
- */
-function crc8(data) {
-    let crc = 0x00;
-    for (let i = 0; i < data.length; i++) {
-        crc ^= data[i];
-        for (let j = 0; j < 8; j++) {
-            if (crc & 0x01) {
-                crc = (crc >> 1) ^ 0x8C;
-            } else {
-                crc >>= 1;
-            }
-        }
-    }
-    return crc & 0xFF;
-}
-
-/**
- * Pack a MicroSegment into a 26-byte wire packet.
- */
-function packMicrosegment(dx, dy, dz, da, interval, flags = 0, seq = 0) {
-    const buffer = new ArrayBuffer(26);
-    const view = new DataView(buffer);
-    const uint8 = new Uint8Array(buffer);
-
-    view.setUint8(0, 0xAB);
-    view.setInt32(1, dx, true);
-    view.setInt32(5, dy, true);
-    view.setInt32(9, dz, true);
-    view.setInt32(13, da, true);
-    view.setUint32(17, interval, true);
-    view.setUint8(21, flags);
-    view.setUint8(22, seq & 0xFF);
-    view.setUint8(23, 0);
-    view.setUint8(24, 0);
-
-    const crc = crc8(uint8.subarray(0, 25));
-    view.setUint8(25, crc);
-
-    return uint8;
-}
+// MicroSegment wire packing + CRC-8 live in a single module (BinaryUtils.js) so
+// the two former copies can no longer drift. (Assessment R4 / fix F7.)
+import { packMicrosegment } from './BinaryUtils.js';
 
 /**
  * @class Vector2
@@ -244,8 +205,10 @@ class SvgConverter {
     const globalSteps = options.stepsPerMM || 1.0;
     this.stepsPerMM_X = options.stepsPerMM_X || globalSteps;
     this.stepsPerMM_Y = options.stepsPerMM_Y || globalSteps;
-    this.stepsPerMM_Z = options.stepsPerMM_Z || 80.0;
-    this.stepsPerDeg_A = options.stepsPerDeg_A || 92.44;
+    // Defaults mirror the firmware machine config (Urumi-Fw config.py):
+    // Z = 1200 steps/mm, A = 120 steps/deg. (Assessment R3 / fix F3.)
+    this.stepsPerMM_Z = options.stepsPerMM_Z || 1200.0;
+    this.stepsPerDeg_A = options.stepsPerDeg_A || 120.0;
     
     this.idX = options.idX !== undefined ? options.idX : 3;
     this.idY = options.idY !== undefined ? options.idY : 2;
@@ -260,10 +223,33 @@ class SvgConverter {
     this.angleThreshold = options.angleThreshold !== undefined ? options.angleThreshold : 10;
     this.homeAngleA = options.homeAngleA !== undefined ? options.homeAngleA : 90;
     this.decimals = 4;
+
+    // Profiling Config
+    this.acceleration = options.acceleration !== undefined ? options.acceleration : 1000.0;
+    this.junctionDeviation = options.junctionDeviation !== undefined ? options.junctionDeviation : 0.05;
     
     // Limits
-    this.maxSteps = options.maxSteps !== undefined ? options.maxSteps : 30000;
-    this.maxSpeed = options.maxSpeed !== undefined ? options.maxSpeed : 30000;
+    this.maxXYSpeed = options.maxXYSpeed !== undefined ? options.maxXYSpeed : (options.maxLinearSpeed !== undefined ? options.maxLinearSpeed : 200);
+    this.maxZSpeed = options.maxZSpeed !== undefined ? options.maxZSpeed : 10;
+    this.maxRotationalSpeed = options.maxRotationalSpeed !== undefined ? options.maxRotationalSpeed : 720;
+    
+    // F5: Hard-cap speeds based on physical RS485 bandwidth limit (~80 kHz max step rate)
+    const maxPhysicalStepRate = 75000;
+    
+    const maxSpsPerMM_XY = Math.max(this.stepsPerMM_X, this.stepsPerMM_Y);
+    this.maxXYSpeed = Math.min(this.maxXYSpeed, maxPhysicalStepRate / maxSpsPerMM_XY);
+    this.maxZSpeed = Math.min(this.maxZSpeed, maxPhysicalStepRate / this.stepsPerMM_Z);
+    this.maxRotationalSpeed = Math.min(this.maxRotationalSpeed, maxPhysicalStepRate / this.stepsPerDeg_A);
+    
+    // Automate Max Steps (Per Command) to guarantee a response window of ~0.4s:
+    const maxXStepRate = this.maxXYSpeed * this.stepsPerMM_X;
+    const maxYStepRate = this.maxXYSpeed * this.stepsPerMM_Y;
+    const maxZStepRate = this.maxZSpeed * this.stepsPerMM_Z;
+    const maxLinearStepRateTotal = Math.max(maxXStepRate, maxYStepRate, maxZStepRate);
+    
+    const targetResponseTime = 0.4; // seconds
+    this.maxSteps = Math.round(maxLinearStepRateTotal * targetResponseTime);
+    this.maxSteps = Math.max(1000, Math.min(this.maxSteps, 100000));
     
     // Bounds
     this.bedW = options.bedW !== undefined ? options.bedW : Infinity;
@@ -297,14 +283,21 @@ class SvgConverter {
    * @returns {string} The generated Trajectory Data (CSV format).
    */
   convert(svgContent) {
-    const preamble = [];
-    const packets = [];
+    this.rawSegments = [];
     
     // First command to enable the motors.
     // WAIT_MS:500 lets the Pico finish its multi-step ENABLE ALL sequence
     // before we send suction or binary commands (prevents "Command queue full").
-    preamble.push('enable all 1');
-    preamble.push('WAIT_MS:500');
+    this.rawSegments.push({ type: 'meta', command: 'enable all 1' });
+    this.rawSegments.push({ type: 'meta', command: 'WAIT_MS:500' });
+
+    const state = {
+        isPenDown: false,
+        machineX: 0,
+        machineY: 0,
+        machineZ: this.zUp,
+        machineA: this.homeAngleA
+    };
 
     if (typeof DOMParser !== 'undefined') {
         const parser = new DOMParser();
@@ -331,14 +324,6 @@ class SvgConverter {
 
         const elements = doc.querySelectorAll('path, rect, circle, ellipse, line, polyline, polygon');
         
-        const state = {
-            isPenDown: false,
-            machineX: 0,
-            machineY: 0,
-            machineZ: this.zUp,
-            machineA: this.homeAngleA
-        };
-
         let validElements = [];
 
         elements.forEach((el, index) => {
@@ -389,8 +374,8 @@ class SvgConverter {
 
             // Inject tool change pause if transitioning from crease to cut
             if (!injectedToolChange && hasCrease && hasCut && method !== 'crease') {
-                preamble.push('; --- TOOL CHANGE ---');
-                preamble.push('PAUSE_FOR_TOOL_CHANGE');
+                this.rawSegments.push({ type: 'meta', command: '; --- TOOL CHANGE ---' });
+                this.rawSegments.push({ type: 'meta', command: 'PAUSE_FOR_TOOL_CHANGE' });
                 injectedToolChange = true;
             }
 
@@ -423,21 +408,12 @@ class SvgConverter {
             }
 
             const shapeId = `shape_${originalIndex}`;
-            preamble.push(`; SHAPE_START id=${shapeId} method=${method}`);
-            
-            const shapePackets = this.generateTrajectory(commands, state, method);
-            packets.push(...shapePackets);
-            preamble.push(`; SHAPE_END`);
+            this.rawSegments.push({ type: 'meta', command: `; SHAPE_START id=${shapeId} method=${method}` });
+            this.generateTrajectory(commands, state, method);
+            this.rawSegments.push({ type: 'meta', command: `; SHAPE_END` });
         });
         
     } else {
-        const state = {
-            isPenDown: false,
-            machineX: 0,
-            machineY: 0,
-            machineZ: this.zUp,
-            machineA: this.homeAngleA
-        };
         const pathRegex = /<path[^>]*\bd=[\"']([^\"']+)["']/gi;
         let match;
         let validElements = [];
@@ -462,20 +438,27 @@ class SvgConverter {
 
         validElements.forEach(v => {
             if (!injectedToolChange && hasCrease && hasCut && v.method !== 'crease') {
-                preamble.push('; --- TOOL CHANGE ---');
-                preamble.push('PAUSE_FOR_TOOL_CHANGE');
+                this.rawSegments.push({ type: 'meta', command: '; --- TOOL CHANGE ---' });
+                this.rawSegments.push({ type: 'meta', command: 'PAUSE_FOR_TOOL_CHANGE' });
                 injectedToolChange = true;
             }
 
             const commands = this.parsePathData(v.d);
-            preamble.push(`; SHAPE_START id=path_${v.originalIndex} method=${v.method}`);
-            const shapePackets = this.generateTrajectory(commands, state, v.method);
-            packets.push(...shapePackets);
-            preamble.push(`; SHAPE_END`);
+            this.rawSegments.push({ type: 'meta', command: `; SHAPE_START id=path_${v.originalIndex} method=${v.method}` });
+            this.generateTrajectory(commands, state, v.method);
+            this.rawSegments.push({ type: 'meta', command: `; SHAPE_END` });
         });
     }
 
-    return { preamble, packets };
+    // Return home
+    this.rawSegments.push({ type: 'meta', command: '; --- RETURN HOME ---' });
+    this.generateTrajectory([{ type: 'M', args: [0, 0] }], state, 'thru_cut');
+    this.emitPoint(null, null, state, 0, 0, this.zUp, 0, 0, 0, this.homeAngleA);
+
+    // Plan velocities and generate packets
+    this.planVelocities();
+    const result = this.generateTimedPackets();
+    return { preamble: result.textLines, packets: result.packets };
   }
 
   /**
@@ -627,10 +610,11 @@ class SvgConverter {
    * @param {Array} commands - List of parsed commands.
    * @param {Object} state - The machine state.
    * @param {string} method - The shape cutting method (crease, thru_cut, off_base).
-   * @returns {Array} Array of CSV data lines.
+   * @returns {Object} { packets: Array of Uint8Array, textLines: Array of string }
    */
   generateTrajectory(commands, state = null, method = 'thru_cut') {
-    const data = [];
+    const packets = [];
+    const textLines = [];
     let cur = new Vector2(0, 0);
     let start = new Vector2(0, 0); 
     let lastControl = new Vector2(0, 0);
@@ -664,11 +648,11 @@ class SvgConverter {
                 const p = getPt(0);
                 
                 if (state.isPenDown) {
-                    this.emitPoint(data, state, state.machineX, state.machineY, this.zUp, 0, 0, -this.feedRate);
+                    this.emitPoint(packets, textLines, state, state.machineX, state.machineY, this.zUp, 0, 0, -this.feedRate);
                 }
                 
                 // Segment the travel move to avoid large step values (>32000) over long distances
-                this.emitLineSubdivided(data, state, p, this.zUp);
+                this.emitLineSubdivided(packets, textLines, state, p, this.zUp);
                 
                 cur = p;
                 start = p;
@@ -677,7 +661,7 @@ class SvgConverter {
             }
             case 'L': {
                 const p = getPt(0);
-                this.emitLineSubdivided(data, state, p, targetZDown);
+                this.emitLineSubdivided(packets, textLines, state, p, targetZDown);
                 cur = p;
                 lastControl = p;
                 break;
@@ -685,7 +669,7 @@ class SvgConverter {
             case 'H': {
                 const x = isRelative ? cur.x + args[0] : args[0];
                 const p = new Vector2(x, cur.y);
-                this.emitLineSubdivided(data, state, p, targetZDown);
+                this.emitLineSubdivided(packets, textLines, state, p, targetZDown);
                 cur = p;
                 lastControl = p;
                 break;
@@ -693,7 +677,7 @@ class SvgConverter {
             case 'V': {
                 const y = isRelative ? cur.y + args[0] : args[0];
                 const p = new Vector2(cur.x, y);
-                this.emitLineSubdivided(data, state, p, targetZDown);
+                this.emitLineSubdivided(packets, textLines, state, p, targetZDown);
                 cur = p;
                 lastControl = p;
                 break;
@@ -703,7 +687,7 @@ class SvgConverter {
                 const c2 = getPt(2);
                 const p = getPt(4);
                 const bezier = new CubicBezier(cur, c1, c2, p);
-                this.flattenBezier(data, state, bezier, targetZDown);
+                this.flattenBezier(packets, textLines, state, bezier, targetZDown);
                 cur = p;
                 lastControl = c2;
                 break;
@@ -716,7 +700,7 @@ class SvgConverter {
                 const c2 = getPt(0);
                 const p = getPt(2);
                 const bezier = new CubicBezier(cur, c1, c2, p);
-                this.flattenBezier(data, state, bezier, targetZDown);
+                this.flattenBezier(packets, textLines, state, bezier, targetZDown);
                 cur = p;
                 lastControl = c2;
                 break;
@@ -727,7 +711,7 @@ class SvgConverter {
                 const cp1 = cur.add(c1.sub(cur).mul(2/3));
                 const cp2 = p.add(c1.sub(p).mul(2/3));
                 const bezier = new CubicBezier(cur, cp1, cp2, p);
-                this.flattenBezier(data, state, bezier, targetZDown);
+                this.flattenBezier(packets, textLines, state, bezier, targetZDown);
                 cur = p;
                 lastControl = c1;
                 break;
@@ -741,20 +725,20 @@ class SvgConverter {
                  const cp1 = cur.add(c1.sub(cur).mul(2/3));
                 const cp2 = p.add(c1.sub(p).mul(2/3));
                 const bezier = new CubicBezier(cur, cp1, cp2, p);
-                this.flattenBezier(data, state, bezier, targetZDown);
+                this.flattenBezier(packets, textLines, state, bezier, targetZDown);
                 cur = p;
                 lastControl = c1;
                 break;
             }
             case 'Z': {
-                this.emitLineSubdivided(data, state, start, targetZDown);
+                this.emitLineSubdivided(packets, textLines, state, start, targetZDown);
                 cur = start;
                 lastControl = start;
                 break;
             }
              case 'A': {
                  const p = getPt(5);
-                 this.emitLineSubdivided(data, state, p, targetZDown);
+                 this.emitLineSubdivided(packets, textLines, state, p, targetZDown);
                  cur = p;
                  lastControl = p;
                  break;
@@ -764,20 +748,21 @@ class SvgConverter {
     });
 
     if (state.isPenDown) {
-        this.emitPoint(data, state, state.machineX, state.machineY, this.zUp, 0, 0, -this.feedRate);
+        this.emitPoint(packets, textLines, state, state.machineX, state.machineY, this.zUp, 0, 0, -this.feedRate);
         state.isPenDown = false;
     }
 
-    this.emitPoint(data, state, state.machineX, state.machineY, this.zUp, 0, 0, 0, this.homeAngleA);
+    this.emitPoint(packets, textLines, state, state.machineX, state.machineY, this.zUp, 0, 0, 0, this.homeAngleA);
 
-    return data;
+    return { packets, textLines };
+    return { packets, textLines, rawSegments: this.rawSegments };
   }
 
   /**
    * @method emitPoint
    * @description Formats and emits a single row of CSV data, automatically handling Tangential Knife rotations.
    */
-  emitPoint(data, state, x, y, z, vx, vy, vz, forcedAngle = null) {
+  emitPoint(packets, textLines, state, x, y, z, vx, vy, vz, forcedAngle = null) {
       // Clamp coordinates to cutting bed bounds
       x = Math.max(0, Math.min(this.bedW, x));
       y = Math.max(0, Math.min(this.bedH, y));
@@ -796,7 +781,12 @@ class SvgConverter {
       let targetA = state.machineA;
       if (forcedAngle !== null) {
           targetA = ((forcedAngle % 360) + 360) % 360;
+      } else if (vx !== undefined && vy !== undefined && (Math.abs(vx) > 0.000001 || Math.abs(vy) > 0.000001)) {
+          // Use exact analytical velocity when available to eliminate aliasing/jitter
+          targetA = Math.atan2(vy, vx) * 180 / Math.PI;
+          targetA = ((targetA % 360) + 360) % 360;
       } else if (dSq >= 0.000001) {
+          // Fallback to secant approximation for tiny straight lines without velocity
           targetA = Math.atan2(dy, dx) * 180 / Math.PI;
           targetA = ((targetA % 360) + 360) % 360;
       }
@@ -809,11 +799,22 @@ class SvgConverter {
           const angleDelta = ((targetAngle - state.machineA + 180) % 360 + 360) % 360 - 180;
           const resolvedTargetAngle = state.machineA + angleDelta;
 
-          // Calculate relative steps for X, Y, Z, and Angle
-          const relativeXStep = Math.round((targetX - state.machineX) * this.stepsPerMM_X);
-          const relativeYStep = Math.round((targetY - state.machineY) * this.stepsPerMM_Y);
-          const relativeZStep = Math.round((state.machineZ - targetZ) * this.stepsPerMM_Z);
-          const relativeAStep = Math.round(angleDelta * this.stepsPerDeg_A);
+          // Prevent fractional drift by comparing absolute rounded steps
+          const currentXSteps = Math.round(state.machineX * this.stepsPerMM_X);
+          const targetXSteps = Math.round(targetX * this.stepsPerMM_X);
+          const relativeXStep = targetXSteps - currentXSteps;
+
+          const currentYSteps = Math.round(state.machineY * this.stepsPerMM_Y);
+          const targetYSteps = Math.round(targetY * this.stepsPerMM_Y);
+          const relativeYStep = targetYSteps - currentYSteps;
+
+          const currentZSteps = Math.round(state.machineZ * this.stepsPerMM_Z);
+          const targetZSteps = Math.round(targetZ * this.stepsPerMM_Z);
+          const relativeZStep = currentZSteps - targetZSteps;
+
+          const currentASteps = Math.round(state.machineA * this.stepsPerDeg_A);
+          const targetASteps = Math.round(resolvedTargetAngle * this.stepsPerDeg_A);
+          const relativeAStep = targetASteps - currentASteps;
           
           const maxAbsStep = Math.max(
               Math.abs(relativeXStep),
@@ -844,62 +845,42 @@ class SvgConverter {
               }
               return;
           }
-
-          let stepVx = Math.abs(Math.round(targetVx * this.stepsPerMM_X));
-          let stepVy = Math.abs(Math.round(targetVy * this.stepsPerMM_Y));
-          let stepVz = Math.abs(Math.round(targetVz * this.stepsPerMM_Z));
           
           // If there is no movement at all, don't emit the line (but update state)
           if (relativeXStep === 0 && relativeYStep === 0 && relativeZStep === 0 && relativeAStep === 0) {
               state.machineX = targetX;
               state.machineY = targetY;
               state.machineZ = targetZ;
-              state.machineA = ((resolvedTargetAngle % 360) + 360) % 360;
+              state.machineA = resolvedTargetAngle;
               return;
           }
           
-          // Calculate duration to ensure all nodes arrive simultaneously
-          let duration = 0;
-          if (stepVx > 0 && relativeXStep !== 0) duration = Math.abs(relativeXStep) / stepVx;
-          else if (stepVy > 0 && relativeYStep !== 0) duration = Math.abs(relativeYStep) / stepVy;
-          else if (stepVz > 0 && relativeZStep !== 0) duration = Math.abs(relativeZStep) / stepVz;
-
-          let stepVa = 0;
-          if (relativeAStep !== 0) {
-              if (duration > 0) {
-                  stepVa = Math.abs(relativeAStep) / duration;
-              } else {
-                  // Pure rotation
-                  stepVa = this.stepsPerDeg_A * 360; // default 360 deg/sec
-                  duration = Math.abs(relativeAStep) / stepVa;
-              }
-              stepVa = Math.max(1, Math.round(stepVa));
-          }
-
-          // Calculate max step frequency to enforce maxSpeed
-          
-          if (maxAbsStep > 0 && duration > 0) {
-              let currentMaxSps = maxAbsStep / duration;
-              if (currentMaxSps > this.maxSpeed) {
-                  duration = maxAbsStep / this.maxSpeed;
-              }
-          }
-
-          let interval = 0;
-          if (maxAbsStep > 0) {
-              if (duration > 0) {
-                  interval = Math.max(1, Math.round((150_000_000 * duration) / maxAbsStep));
-              } else {
-                  interval = 150_000_000;
-              }
-              const pkt = packMicrosegment(relativeXStep, relativeYStep, relativeZStep, relativeAStep, interval, 0, 0);
-              data.push(pkt);
-          }
+          this.rawSegments.push({
+              type: 'motion',
+              x1: state.machineX,
+              y1: state.machineY,
+              z1: state.machineZ,
+              a1: state.machineA,
+              x2: targetX,
+              y2: targetY,
+              z2: targetZ,
+              a2: resolvedTargetAngle,
+              relativeXStep,
+              relativeYStep,
+              relativeZStep,
+              relativeAStep,
+              dx: targetX - state.machineX,
+              dy: targetY - state.machineY,
+              dz: targetZ - state.machineZ,
+              da: angleDelta,
+              length: Math.sqrt((targetX - state.machineX)**2 + (targetY - state.machineY)**2),
+              feedRate: (targetVx !== 0 || targetVy !== 0) ? Math.sqrt(targetVx*targetVx + targetVy*targetVy) : (targetVz !== 0 ? Math.abs(targetVz) : this.feedRate)
+          });
           
           state.machineX = targetX;
           state.machineY = targetY;
           state.machineZ = targetZ;
-          state.machineA = ((resolvedTargetAngle % 360) + 360) % 360;
+          state.machineA = resolvedTargetAngle;
       };
 
       // Handle Plunge/Lift & Tangential knife sharp corners
@@ -930,7 +911,7 @@ class SvgConverter {
    * @method emitLineSubdivided
    * @description Helper to draw a straight line subdivided into exactly segmentLength intervals.
    */
-  emitLineSubdivided(data, state, rawP, targetZ) {
+  emitLineSubdivided(packets, textLines, state, rawP, targetZ) {
       const startX = state.machineX;
       const startY = state.machineY;
       const zHeight = targetZ !== undefined ? targetZ : this.zDown;
@@ -943,7 +924,7 @@ class SvgConverter {
       
       if (dist < 0.000001) {
           if (Math.abs(zHeight - state.machineZ) > 0.001) {
-              this.emitPoint(data, state, p.x, p.y, zHeight, 0, 0, 0);
+              this.emitPoint(packets, textLines, state, p.x, p.y, zHeight, 0, 0, 0);
           }
           return;
       }
@@ -968,7 +949,7 @@ class SvgConverter {
           const currX = startX + dx * t;
           const currY = startY + dy * t;
           
-          this.emitPoint(data, state, currX, currY, zHeight, vx, vy, vz);
+          this.emitPoint(packets, textLines, state, currX, currY, zHeight, vx, vy, vz);
       }
   }
 
@@ -976,7 +957,7 @@ class SvgConverter {
    * @method flattenBezier
    * @description Subdivides a Bezier curve into equidistant physical segments.
    */
-  flattenBezier(data, state, bezier, targetZ) {
+  flattenBezier(packets, textLines, state, bezier, targetZ) {
       const steps = 50; 
       const lut = bezier.getLUT(steps);
       const totalLength = lut[lut.length - 1].dist;
@@ -985,7 +966,7 @@ class SvgConverter {
       const zHeight = targetZ !== undefined ? targetZ : this.zDown;
 
       if (numSegments <= 0) {
-          this.emitLineSubdivided(data, state, bezier.p3, zHeight);
+          this.emitLineSubdivided(packets, textLines, state, bezier.p3, zHeight);
           return;
       }
 
@@ -1024,8 +1005,228 @@ class SvgConverter {
               vz = (vz / mag) * this.feedRate;
           }
 
-          this.emitPoint(data, state, p.x, p.y, zHeight, vx, vy, vz);
+          this.emitPoint(packets, textLines, state, p.x, p.y, zHeight, vx, vy, vz);
       }
+  }
+
+  planVelocities() {
+      // 1. Identify continuous blocks of XY motion segments (length > 0)
+      const blocks = [];
+      let currentBlock = [];
+
+      for (let i = 0; i < this.rawSegments.length; i++) {
+          const seg = this.rawSegments[i];
+          if (seg.type === 'motion') {
+              // Calculate segment properties
+              let length = seg.length;
+              // If length is 0 but it has XY steps, resolve length
+              if (length === 0 && (seg.relativeXStep !== 0 || seg.relativeYStep !== 0)) {
+                  length = Math.sqrt((seg.relativeXStep / this.stepsPerMM_X)**2 + (seg.relativeYStep / this.stepsPerMM_Y)**2);
+              }
+              seg.length = length;
+
+              // Determine max speed (vMax)
+              if (length > 0) {
+                  seg.vMax = Math.min(seg.feedRate, this.maxXYSpeed);
+                  currentBlock.push(seg);
+              } else {
+                  // Non-XY motion (Z-only, A-only, etc.)
+                  // Closes the current XY block
+                  if (currentBlock.length > 0) {
+                      blocks.push(currentBlock);
+                      currentBlock = [];
+                  }
+                  // Setup Z-only/A-only speed
+                  if (seg.relativeZStep !== 0) {
+                      seg.vMax = this.maxZSpeed;
+                  } else if (seg.relativeAStep !== 0) {
+                      seg.vMax = this.maxRotationalSpeed;
+                  } else {
+                      seg.vMax = 0;
+                  }
+                  seg.entrySpeed = seg.vMax;
+                  seg.exitSpeed = seg.vMax;
+              }
+          } else {
+              // Meta segments also close the current XY block
+              if (currentBlock.length > 0) {
+                  blocks.push(currentBlock);
+                  currentBlock = [];
+              }
+          }
+      }
+      if (currentBlock.length > 0) {
+          blocks.push(currentBlock);
+      }
+
+      // 2. Plan each XY block
+      for (const block of blocks) {
+          const N = block.length;
+          if (N === 0) continue;
+
+          // Compute junction limit speeds
+          for (let i = 0; i < N - 1; i++) {
+              const S1 = block[i];
+              const S2 = block[i + 1];
+
+              // Unit direction vectors
+              const u1_x = S1.dx / S1.length;
+              const u1_y = S1.dy / S1.length;
+              const u2_x = S2.dx / S2.length;
+              const u2_y = S2.dy / S2.length;
+
+              const dot = u1_x * u2_x + u1_y * u2_y;
+              // GRBL junction deviation calculation
+              // junctionCosTheta = -dot
+              const cosTheta = Math.max(-1.0, Math.min(1.0, -dot));
+
+              let junctionSpeed = 0.0;
+              if (cosTheta > 0.999999) {
+                  // Sharp corner
+                  junctionSpeed = 0.0;
+              } else if (cosTheta < -0.999999) {
+                  // Collinear segment
+                  junctionSpeed = Math.min(S1.vMax, S2.vMax);
+              } else {
+                  const sinThetaD2 = Math.sqrt(0.5 * (1.0 - cosTheta));
+                  const limitSpeedSqr = (this.acceleration * this.junctionDeviation * sinThetaD2) / (1.0 - sinThetaD2);
+                  junctionSpeed = Math.sqrt(limitSpeedSqr);
+                  junctionSpeed = Math.min(junctionSpeed, S1.vMax, S2.vMax);
+              }
+              S1.junctionLimit = junctionSpeed;
+          }
+
+          // Initialize speeds
+          for (let i = 0; i < N; i++) {
+              block[i].entrySpeed = block[i].vMax;
+              block[i].exitSpeed = block[i].vMax;
+          }
+
+          // Apply junction limits
+          for (let i = 0; i < N - 1; i++) {
+              const limit = block[i].junctionLimit;
+              block[i].exitSpeed = Math.min(block[i].exitSpeed, limit);
+              block[i + 1].entrySpeed = Math.min(block[i + 1].entrySpeed, limit);
+          }
+
+          // Start and end velocities must be 0
+          block[0].entrySpeed = 0.0;
+          block[N - 1].exitSpeed = 0.0;
+
+          // Backward Pass: Exit-to-Entry deceleration planning
+          for (let i = N - 1; i >= 0; i--) {
+              const seg = block[i];
+              const maxEntrySpeed = Math.sqrt(seg.exitSpeed * seg.exitSpeed + 2.0 * this.acceleration * seg.length);
+              seg.entrySpeed = Math.min(seg.entrySpeed, maxEntrySpeed);
+              
+              if (i > 0) {
+                  block[i - 1].exitSpeed = Math.min(block[i - 1].exitSpeed, seg.entrySpeed);
+              }
+          }
+
+          // Forward Pass: Entry-to-Exit acceleration planning
+          for (let i = 0; i < N; i++) {
+              const seg = block[i];
+              const maxExitSpeed = Math.sqrt(seg.entrySpeed * seg.entrySpeed + 2.0 * this.acceleration * seg.length);
+              seg.exitSpeed = Math.min(seg.exitSpeed, maxExitSpeed);
+
+              if (i < N - 1) {
+                  block[i + 1].entrySpeed = Math.min(block[i + 1].entrySpeed, seg.exitSpeed);
+              }
+          }
+      }
+  }
+
+  generateTimedPackets() {
+      const packets = [];
+      const textLines = [];
+
+      for (let i = 0; i < this.rawSegments.length; i++) {
+          const seg = this.rawSegments[i];
+          if (seg.type === 'meta') {
+              textLines.push(seg.command);
+          } else if (seg.type === 'motion') {
+              const relativeXStep = seg.relativeXStep;
+              const relativeYStep = seg.relativeYStep;
+              const relativeZStep = seg.relativeZStep;
+              const relativeAStep = seg.relativeAStep;
+
+              const maxAbsStep = Math.max(
+                  Math.abs(relativeXStep),
+                  Math.abs(relativeYStep),
+                  Math.abs(relativeZStep),
+                  Math.abs(relativeAStep)
+              );
+
+              if (maxAbsStep === 0) continue;
+
+              let duration = 0;
+              const length = seg.length;
+
+              if (length > 0) {
+                  // XY motion segment
+                  const vAvg = Math.max(0.1, (seg.entrySpeed + seg.exitSpeed) / 2);
+                  duration = length / vAvg;
+              } else if (relativeZStep !== 0) {
+                  // Z-only motion segment
+                  const stepVz = Math.abs(seg.feedRate * this.stepsPerMM_Z);
+                  if (stepVz > 0) {
+                      duration = Math.abs(relativeZStep) / stepVz;
+                  }
+              }
+
+              if (relativeAStep !== 0) {
+                  if (duration > 0) {
+                      // A rotates concurrently with other axes
+                  } else {
+                      // A-only motion segment
+                      const stepVa = this.stepsPerDeg_A * this.maxRotationalSpeed;
+                      duration = Math.abs(relativeAStep) / stepVa;
+                  }
+              }
+
+              // Enforce physical maximum speeds per-axis to prevent motor stalling
+              if (duration > 0) {
+                  const maxSpsX = this.maxXYSpeed * this.stepsPerMM_X;
+                  const maxSpsY = this.maxXYSpeed * this.stepsPerMM_Y;
+                  const maxSpsZ = this.maxZSpeed * this.stepsPerMM_Z;
+                  const maxSpsA = this.maxRotationalSpeed * this.stepsPerDeg_A;
+
+                  const currentSpsX = Math.abs(relativeXStep) / duration;
+                  if (currentSpsX > maxSpsX) duration = Math.abs(relativeXStep) / maxSpsX;
+                  
+                  const currentSpsY = Math.abs(relativeYStep) / duration;
+                  if (currentSpsY > maxSpsY) duration = Math.abs(relativeYStep) / maxSpsY;
+                  
+                  const currentSpsZ = Math.abs(relativeZStep) / duration;
+                  if (currentSpsZ > maxSpsZ) duration = Math.abs(relativeZStep) / maxSpsZ;
+                  
+                  const currentSpsA = Math.abs(relativeAStep) / duration;
+                  if (currentSpsA > maxSpsA) duration = Math.abs(relativeAStep) / maxSpsA;
+              }
+
+              let interval = 0;
+              if (duration > 0) {
+                  interval = Math.max(1, Math.round((150_000_000 * duration) / maxAbsStep));
+              } else {
+                  interval = 150_000_000;
+              }
+
+              // F5: Hard-cap physical step rate to 75,000 steps/sec (2,000 ticks minimum interval)
+              interval = Math.max(2000, interval);
+
+              const pkt = packMicrosegment(relativeXStep, relativeYStep, relativeZStep, relativeAStep, interval, 0, 0);
+              packets.push(pkt);
+
+              // Include debugging info with entry/exit speeds if it's an XY move
+              const speedInfo = length > 0
+                  ? ` vEntry:${seg.entrySpeed.toFixed(1)} vExit:${seg.exitSpeed.toFixed(1)}`
+                  : '';
+              textLines.push(`; MOVE X:${seg.x2.toFixed(3)} Y:${seg.y2.toFixed(3)} Z:${seg.z2.toFixed(3)} A:${seg.a2.toFixed(3)} (Interval: ${interval})${speedInfo}`);
+          }
+      }
+
+      return { packets, textLines };
   }
 }
 

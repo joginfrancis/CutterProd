@@ -242,6 +242,11 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 const maxZSpeed = maxZSpeedInput ? parseInt(maxZSpeedInput.value) : 10;
                 const maxRotationalSpeed = maxRotationalSpeedInput ? parseInt(maxRotationalSpeedInput.value) : 720;
 
+                const accelerationInput = document.getElementById('accelerationInput');
+                const junctionDeviationInput = document.getElementById('junctionDeviationInput');
+                const acceleration = accelerationInput ? parseFloat(accelerationInput.value) : 1000.0;
+                const junctionDeviation = junctionDeviationInput ? parseFloat(junctionDeviationInput.value) : 0.05;
+
                 // flipX/flipY are resolved above (with canvas-source override),
                 // so do NOT re-read them here — they shadow the corrected values.
 
@@ -253,6 +258,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                     maxXYSpeed: maxXYSpeed,
                     maxZSpeed: maxZSpeed,
                     maxRotationalSpeed: maxRotationalSpeed,
+                    acceleration: acceleration,
+                    junctionDeviation: junctionDeviation,
                     scale: scale,
                     offsetX: finalOffsetX,
                     offsetY: finalOffsetY,
