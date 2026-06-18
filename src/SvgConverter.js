@@ -835,7 +835,7 @@ class SvgConverter {
               state.machineX = targetX;
               state.machineY = targetY;
               state.machineZ = targetZ;
-              state.machineA = ((resolvedTargetAngle % 360) + 360) % 360;
+              state.machineA = resolvedTargetAngle;
               return;
           }
           
@@ -892,7 +892,7 @@ class SvgConverter {
           state.machineX = targetX;
           state.machineY = targetY;
           state.machineZ = targetZ;
-          state.machineA = ((resolvedTargetAngle % 360) + 360) % 360;
+          state.machineA = resolvedTargetAngle;
       };
 
       // Handle Plunge/Lift & Tangential knife sharp corners
