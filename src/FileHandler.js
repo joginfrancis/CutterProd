@@ -235,12 +235,11 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
                 const idA = parseInt(document.getElementById('aRs485Id')?.value) || 4;
 
-                const maxStepsInput = document.getElementById('maxStepsInput');
-                const maxSteps = maxStepsInput ? parseInt(maxStepsInput.value) : 30000;
-                
-                const maxLinearSpeedInput = document.getElementById('maxLinearSpeedInput');
+                const maxXYSpeedInput = document.getElementById('maxXYSpeedInput');
+                const maxZSpeedInput = document.getElementById('maxZSpeedInput');
                 const maxRotationalSpeedInput = document.getElementById('maxRotationalSpeedInput');
-                const maxLinearSpeed = maxLinearSpeedInput ? parseInt(maxLinearSpeedInput.value) : 200;
+                const maxXYSpeed = maxXYSpeedInput ? parseInt(maxXYSpeedInput.value) : 200;
+                const maxZSpeed = maxZSpeedInput ? parseInt(maxZSpeedInput.value) : 10;
                 const maxRotationalSpeed = maxRotationalSpeedInput ? parseInt(maxRotationalSpeedInput.value) : 720;
 
                 // flipX/flipY are resolved above (with canvas-source override),
@@ -251,8 +250,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                     flipX: flipX,
                     flipY: flipY,
                     feedRate: cuttingSpeed, 
-                    maxSteps: maxSteps,
-                    maxLinearSpeed: maxLinearSpeed,
+                    maxXYSpeed: maxXYSpeed,
+                    maxZSpeed: maxZSpeed,
                     maxRotationalSpeed: maxRotationalSpeed,
                     scale: scale,
                     offsetX: finalOffsetX,

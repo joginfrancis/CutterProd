@@ -1786,20 +1786,20 @@ segmentLengthInput.addEventListener('input', (e) => { segmentLengthSlider.value 
 cuttingSpeedSlider.addEventListener('input', (e) => { cuttingSpeedInput.value = e.target.value; });
 cuttingSpeedInput.addEventListener('input', (e) => { cuttingSpeedSlider.value = e.target.value; });
 
-const maxStepsSlider = document.getElementById('maxStepsSlider');
-const maxStepsInput = document.getElementById('maxStepsInput');
-const maxLinearSpeedSlider = document.getElementById('maxLinearSpeedSlider');
-const maxLinearSpeedInput = document.getElementById('maxLinearSpeedInput');
+const maxXYSpeedSlider = document.getElementById('maxXYSpeedSlider');
+const maxXYSpeedInput = document.getElementById('maxXYSpeedInput');
+const maxZSpeedSlider = document.getElementById('maxZSpeedSlider');
+const maxZSpeedInput = document.getElementById('maxZSpeedInput');
 const maxRotationalSpeedSlider = document.getElementById('maxRotationalSpeedSlider');
 const maxRotationalSpeedInput = document.getElementById('maxRotationalSpeedInput');
 
-if (maxStepsSlider && maxStepsInput) {
-    maxStepsSlider.addEventListener('input', (e) => { maxStepsInput.value = e.target.value; });
-    maxStepsInput.addEventListener('input', (e) => { maxStepsSlider.value = e.target.value; });
+if (maxXYSpeedSlider && maxXYSpeedInput) {
+    maxXYSpeedSlider.addEventListener('input', (e) => { maxXYSpeedInput.value = e.target.value; });
+    maxXYSpeedInput.addEventListener('input', (e) => { maxXYSpeedSlider.value = e.target.value; });
 }
-if (maxLinearSpeedSlider && maxLinearSpeedInput) {
-    maxLinearSpeedSlider.addEventListener('input', (e) => { maxLinearSpeedInput.value = e.target.value; });
-    maxLinearSpeedInput.addEventListener('input', (e) => { maxLinearSpeedSlider.value = e.target.value; });
+if (maxZSpeedSlider && maxZSpeedInput) {
+    maxZSpeedSlider.addEventListener('input', (e) => { maxZSpeedInput.value = e.target.value; });
+    maxZSpeedInput.addEventListener('input', (e) => { maxZSpeedSlider.value = e.target.value; });
 }
 if (maxRotationalSpeedSlider && maxRotationalSpeedInput) {
     maxRotationalSpeedSlider.addEventListener('input', (e) => { maxRotationalSpeedInput.value = e.target.value; });
@@ -1809,7 +1809,7 @@ if (maxRotationalSpeedSlider && maxRotationalSpeedInput) {
 // Watch all config inputs for changes
 [
     segmentLengthSlider, segmentLengthInput, cuttingSpeedSlider, cuttingSpeedInput,
-    maxStepsSlider, maxStepsInput, maxLinearSpeedSlider, maxLinearSpeedInput,
+    maxXYSpeedSlider, maxXYSpeedInput, maxZSpeedSlider, maxZSpeedInput,
     maxRotationalSpeedSlider, maxRotationalSpeedInput,
     'bedWidthInput', 'bedHeightInput', 'gantryWidthInput', 'gantryHeightInput',
     'xRs485Id', 'xStepsPerMM',

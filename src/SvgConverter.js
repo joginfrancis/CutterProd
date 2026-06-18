@@ -225,19 +225,27 @@ class SvgConverter {
     this.decimals = 4;
     
     // Limits
-    this.maxSteps = options.maxSteps !== undefined ? options.maxSteps : 30000;
-    this.maxLinearSpeed = options.maxLinearSpeed !== undefined ? options.maxLinearSpeed : 200;
+    this.maxXYSpeed = options.maxXYSpeed !== undefined ? options.maxXYSpeed : (options.maxLinearSpeed !== undefined ? options.maxLinearSpeed : 200);
+    this.maxZSpeed = options.maxZSpeed !== undefined ? options.maxZSpeed : 10;
     this.maxRotationalSpeed = options.maxRotationalSpeed !== undefined ? options.maxRotationalSpeed : 720;
     
-    // Limits based on RP2040 capabilities and protocol
-    this.maxSteps = Math.min(this.maxSteps, 100000);
-    
     // F5: Hard-cap speeds based on physical RS485 bandwidth limit (~80 kHz max step rate)
-    const maxLinearStepRate = 75000;
-    const maxRotationalStepRate = 75000;
-    const maxSpsPerMM = Math.max(this.stepsPerMM_X, this.stepsPerMM_Y, this.stepsPerMM_Z);
-    this.maxLinearSpeed = Math.min(this.maxLinearSpeed, maxLinearStepRate / maxSpsPerMM);
-    this.maxRotationalSpeed = Math.min(this.maxRotationalSpeed, maxRotationalStepRate / this.stepsPerDeg_A);
+    const maxPhysicalStepRate = 75000;
+    
+    const maxSpsPerMM_XY = Math.max(this.stepsPerMM_X, this.stepsPerMM_Y);
+    this.maxXYSpeed = Math.min(this.maxXYSpeed, maxPhysicalStepRate / maxSpsPerMM_XY);
+    this.maxZSpeed = Math.min(this.maxZSpeed, maxPhysicalStepRate / this.stepsPerMM_Z);
+    this.maxRotationalSpeed = Math.min(this.maxRotationalSpeed, maxPhysicalStepRate / this.stepsPerDeg_A);
+    
+    // Automate Max Steps (Per Command) to guarantee a response window of ~0.4s:
+    const maxXStepRate = this.maxXYSpeed * this.stepsPerMM_X;
+    const maxYStepRate = this.maxXYSpeed * this.stepsPerMM_Y;
+    const maxZStepRate = this.maxZSpeed * this.stepsPerMM_Z;
+    const maxLinearStepRateTotal = Math.max(maxXStepRate, maxYStepRate, maxZStepRate);
+    
+    const targetResponseTime = 0.4; // seconds
+    this.maxSteps = Math.round(maxLinearStepRateTotal * targetResponseTime);
+    this.maxSteps = Math.max(1000, Math.min(this.maxSteps, 100000));
     
     // Bounds
     this.bedW = options.bedW !== undefined ? options.bedW : Infinity;
@@ -871,9 +879,9 @@ class SvgConverter {
 
           // Enforce physical maximum speeds per-axis to prevent motor stalling
           if (duration > 0) {
-              const maxSpsX = this.maxLinearSpeed * this.stepsPerMM_X;
-              const maxSpsY = this.maxLinearSpeed * this.stepsPerMM_Y;
-              const maxSpsZ = this.maxLinearSpeed * this.stepsPerMM_Z;
+              const maxSpsX = this.maxXYSpeed * this.stepsPerMM_X;
+              const maxSpsY = this.maxXYSpeed * this.stepsPerMM_Y;
+              const maxSpsZ = this.maxZSpeed * this.stepsPerMM_Z;
               const maxSpsA = this.maxRotationalSpeed * this.stepsPerDeg_A;
 
               const currentSpsX = Math.abs(relativeXStep) / duration;
