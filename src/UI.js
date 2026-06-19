@@ -35,28 +35,42 @@ const statusBadge = document.getElementById('statusBadge');
 const statusText = document.getElementById('statusText');
 const statusDot = statusBadge.querySelector('.status-dot');
 const btnStart = document.getElementById('btnStart');
+const btnPause = document.getElementById('btnPause');
+const btnStop = document.getElementById('btnStop');
 const userCount = document.getElementById('userCount');
 
 /**
- * Updates the Connection Badge (Top Right).
+ * Updates the Connection Badge (Top Right) and Console Drawer Checklist.
  * Green = Connected, Red = Disconnected.
  * 
  * @param {boolean} isConnected - True if WebSocket is open.
  */
 export function updateStatus(isConnected) {
     const isSimMode = document.getElementById('simModeCheckbox')?.checked;
+    const connIndicator = document.querySelector('#activityConnection .status-circle-indicator');
+    
     if (isConnected) {
         statusText.textContent = "Connected";
-        statusBadge.style.backgroundColor = "#a7f3d0"; // Green bg
-        statusBadge.style.color = "#064e3b";           // Dark Green text
+        statusBadge.style.backgroundColor = "rgba(16, 185, 129, 0.15)";
+        statusBadge.style.borderColor = "rgba(16, 185, 129, 0.25)";
+        statusBadge.style.color = "#a7f3d0";           // Light Green text
         statusDot.style.backgroundColor = "#10b981";   // Bright Green dot
-        btnStart.disabled = false; // Enable Start button
+        if (btnStart) btnStart.disabled = false; // Enable Start button
+        
+        if (connIndicator) {
+            connIndicator.className = 'status-circle-indicator connected';
+        }
     } else {
         statusText.textContent = "Disconnected";
-        statusBadge.style.backgroundColor = "#fca5a5"; // Red bg
-        statusBadge.style.color = "#7f1d1d";           // Dark Red text
+        statusBadge.style.backgroundColor = "rgba(239, 68, 68, 0.15)";
+        statusBadge.style.borderColor = "rgba(239, 68, 68, 0.25)";
+        statusBadge.style.color = "#fca5a5";           // Light Red text
         statusDot.style.backgroundColor = "#ef4444";   // Bright Red dot
-        btnStart.disabled = !isSimMode;  // Disable Start button (safety) unless in simulation mode
+        if (btnStart) btnStart.disabled = !isSimMode;  // Disable Start button (safety) unless in simulation mode
+        
+        if (connIndicator) {
+            connIndicator.className = 'status-circle-indicator disconnected';
+        }
     }
 }
 
@@ -68,26 +82,56 @@ export function updateStatus(isConnected) {
  */
 export function updateUserCount(count) {
     const text = count === 1 ? 'user' : 'users';
-    userCount.textContent = `(${count} ${text})`;
+    if (userCount) {
+        userCount.textContent = `(${count} ${text})`;
+    }
 }
 
 /**
- * Toggles the Big Action Button between "Start Cutting" (Green) and "Stop" (Red).
+ * Toggles the Big Action Buttons in Run Mode between "Start Cutting", "Pause", and "Stop".
  * 
  * @param {boolean} isSending - True if a job is running.
+ * @param {boolean} isPaused - True if a job is paused.
  */
 export function setStartButtonState(isSending, isPaused = false) {
     if (isPaused) {
-        btnStart.textContent = "Resume Job";
-        btnStart.classList.remove('btn-stop');
-        btnStart.classList.add('btn-start');
+        if (btnStart) {
+            btnStart.textContent = "Resume Job";
+            btnStart.classList.remove('btn-stop');
+            btnStart.classList.add('btn-start');
+            btnStart.style.display = 'block';
+            btnStart.disabled = false;
+        }
+        if (btnPause) {
+            btnPause.style.display = 'none';
+        }
+        if (btnStop) {
+            btnStop.style.display = 'block';
+        }
     } else if (isSending) {
-        btnStart.textContent = "Stop Cutting";
-        btnStart.classList.remove('btn-start');
-        btnStart.classList.add('btn-stop');
+        if (btnStart) {
+            btnStart.style.display = 'none';
+        }
+        if (btnPause) {
+            btnPause.style.display = 'block';
+            btnPause.disabled = false;
+            btnPause.textContent = "Pause Job";
+        }
+        if (btnStop) {
+            btnStop.style.display = 'block';
+        }
     } else {
-        btnStart.textContent = "Start Cutting";
-        btnStart.classList.remove('btn-stop');
-        btnStart.classList.add('btn-start');
+        if (btnStart) {
+            btnStart.textContent = "Start Cutting";
+            btnStart.classList.remove('btn-stop');
+            btnStart.classList.add('btn-start');
+            btnStart.style.display = 'block';
+        }
+        if (btnPause) {
+            btnPause.style.display = 'none';
+        }
+        if (btnStop) {
+            btnStop.style.display = 'none';
+        }
     }
 }

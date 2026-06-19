@@ -1108,7 +1108,7 @@ export class CanvasEditor {
         // Selection bounding box handles
         if (selected) {
             const bbox = shapeBBox(shape);
-            const bx = mapX(bbox.x);
+            const bx = mapX(bbox.x + bbox.w);
             const by = mapY(bbox.y + bbox.h);
             const bw = bbox.w * scale;
             const bh = bbox.h * scale;

@@ -181,6 +181,11 @@ const connection = new MachineConnection({
             updateViewer();
         }
 
+        // V2 progress tracking
+        if (typeof updateExecutionProgress === 'function') {
+            updateExecutionProgress();
+        }
+
         // Send next window
         sendWindow();
     },
@@ -346,6 +351,14 @@ function updatePositionFromPacket(packet) {
     document.getElementById('jogPosY').textContent = jogState.posY.toFixed(2);
     document.getElementById('jogPosZ').textContent = jogState.posZ.toFixed(2);
     document.getElementById('jogPosA').textContent = jogState.posA.toFixed(2);
+
+    // V2: Sync Setup coordinates and bed graphic visualizer
+    if (typeof updateSetupCoordinates === 'function') {
+        updateSetupCoordinates();
+    }
+    if (typeof updateSetupBedVisualizer === 'function') {
+        updateSetupBedVisualizer();
+    }
 }
 
 /**
@@ -460,6 +473,11 @@ function simulateBinaryStreaming() {
                 updateViewer();
             }
 
+            // V2 progress tracking
+            if (typeof updateExecutionProgress === 'function') {
+                updateExecutionProgress();
+            }
+
             state.simTimeout = setTimeout(simulateNext, 50);
         } else {
             state.simTimeout = null;
@@ -556,6 +574,20 @@ function resumeJob() {
         sendWindow();
     } else {
         executeNextTextCommand();
+    }
+}
+
+function pauseJob() {
+    if (!state.isSending || state.isPaused) return;
+    state.isSending = false;
+    state.isPaused = true;
+    setStartButtonState(false, true);
+    log('⏸️ Job Paused. Pico motion stopped. Click Resume to continue.', 'warning');
+    if (connection.connected) {
+        connection.send('stop', true);
+    }
+    if (typeof updateExecutionProgress === 'function') {
+        updateExecutionProgress();
     }
 }
 
@@ -843,6 +875,9 @@ function finishJob() {
     }
     
     setStartButtonState(false);
+    if (typeof updateExecutionProgress === 'function') {
+        updateExecutionProgress();
+    }
 }
 
 // --- Event Listeners ---
@@ -970,6 +1005,22 @@ btnStart.addEventListener('click', () => {
     }
 });
 
+const btnPause = document.getElementById('btnPause');
+if (btnPause) {
+    btnPause.addEventListener('click', () => {
+        if (state.isSending) {
+            pauseJob();
+        }
+    });
+}
+
+const btnStop = document.getElementById('btnStop');
+if (btnStop) {
+    btnStop.addEventListener('click', () => {
+        stopJob();
+    });
+}
+
 // 2. Manual Command Input (The text box at the bottom)
 const cmdHistory = [];
 let cmdHistoryIndex = -1;
@@ -1001,14 +1052,21 @@ const btnToggleMotors = document.getElementById('btnToggleMotors');
 if (btnToggleMotors) {
     btnToggleMotors.addEventListener('click', () => {
         const isEnabled = btnToggleMotors.dataset.enabled === 'true';
+        const motorsIndicator = document.querySelector('#activityMotors .status-circle-indicator');
         if (isEnabled) {
             connection.send('disable all', true);
             btnToggleMotors.dataset.enabled = 'false';
             btnToggleMotors.textContent = 'Enable Motors';
+            if (motorsIndicator) {
+                motorsIndicator.className = 'status-circle-indicator disabled';
+            }
         } else {
             connection.send('enable all', true);
             btnToggleMotors.dataset.enabled = 'true';
             btnToggleMotors.textContent = 'Disable Motors';
+            if (motorsIndicator) {
+                motorsIndicator.className = 'status-circle-indicator enabled';
+            }
         }
     });
 }
@@ -1159,6 +1217,19 @@ function onGCodeReady(result, stepsPerMM = 1.0) {
     if (connection.connected || isSim) {
         btnStart.disabled = false;
     }
+
+    // V2: Update progress tracker and activity checklist
+    if (typeof updateExecutionProgress === 'function') {
+        updateExecutionProgress();
+    }
+    const runActiveFile = document.getElementById('runActiveFileLabel');
+    if (runActiveFile) {
+        runActiveFile.textContent = state.currentFile ? state.currentFile.name : 'Drawn Shapes';
+    }
+    const activityFileDot = document.querySelector('#activityFile .status-circle-indicator');
+    if (activityFileDot) {
+        activityFileDot.className = 'status-circle-indicator loaded';
+    }
 }
 
 // --- Initialization ---
@@ -1175,6 +1246,7 @@ let canvasEditor = null;
 
 if (drawCanvasEl) {
     canvasEditor = new CanvasEditor(drawCanvasEl, drawViewState);
+    canvasEditor.onChange = updatePropertiesInspector;
 }
 
 // Recompute viewport metrics (mirrors the Viewer math)
@@ -1888,23 +1960,24 @@ const jogState = {
 const jogModal = document.getElementById('jogModal');
 const btnJog = document.getElementById('btnJog');
 
-/** Open / close helpers (same fade pattern as config modal) */
+/** Open / close helpers (floating panel style) */
 function openJogModal() {
-    jogModal.classList.remove('hidden');
-    setTimeout(() => jogModal.classList.add('visible'), 10);
-    // Bind keyboard jogging while modal is open
-    window.addEventListener('keydown', handleJogKey);
+    if (jogModal.classList.contains('hidden')) {
+        jogModal.classList.remove('hidden');
+        // Bind keyboard jogging while panel is open
+        window.addEventListener('keydown', handleJogKey);
+    } else {
+        closeJogModal();
+    }
 }
 
 function closeJogModal() {
-    jogModal.classList.remove('visible');
-    setTimeout(() => jogModal.classList.add('hidden'), 300);
+    jogModal.classList.add('hidden');
     window.removeEventListener('keydown', handleJogKey);
 }
 
 btnJog.addEventListener('click', openJogModal);
 document.getElementById('btnCloseJog').addEventListener('click', closeJogModal);
-jogModal.addEventListener('click', (e) => { if (e.target === jogModal) closeJogModal(); });
 
 /** Step-size pill buttons */
 document.querySelectorAll('.jog-step-btn').forEach(btn => {
@@ -2423,9 +2496,318 @@ function initSuctionBed() {
         });
     });
 
+    // V2: Sync setup bed graphics grid zones based on current active list
+    const activeList = getActiveSuctionZones();
+    const setupBedZones = document.querySelectorAll('.bed-graphics-zone');
+    setupBedZones.forEach(zone => {
+        const zoneNum = parseInt(zone.dataset.zone);
+        zone.classList.toggle('active', activeList.includes(zoneNum));
+    });
+
     // Run the initial UI sync
     updateSuctionUI();
 }
 
 // Kickstart the suction bed subsystem
 initSuctionBed();
+
+
+// ============================================================================
+//  V2 REDESIGN FRONTEND WIRING & HELPERS
+// ============================================================================
+
+// 1. Draggable Floating Panels (Jog Panel)
+function makeElementDraggable(elmnt, header) {
+    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+    if (header) {
+        header.onmousedown = dragMouseDown;
+    } else {
+        elmnt.onmousedown = dragMouseDown;
+    }
+
+    function dragMouseDown(e) {
+        e = e || window.event;
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT' || e.target.closest('.jog-step-btns')) {
+            return;
+        }
+        e.preventDefault();
+        pos3 = e.clientX;
+        pos4 = e.clientY;
+        document.onmouseup = closeDragElement;
+        document.onmousemove = elementDrag;
+    }
+
+    function elementDrag(e) {
+        e = e || window.event;
+        e.preventDefault();
+        pos1 = pos3 - e.clientX;
+        pos2 = pos4 - e.clientY;
+        pos3 = e.clientX;
+        pos4 = e.clientY;
+        elmnt.style.top = (elmnt.offsetTop - pos2) + "px";
+        elmnt.style.left = (elmnt.offsetLeft - pos1) + "px";
+        elmnt.style.right = 'auto'; // Disable right-anchor once dragged
+    }
+
+    function closeDragElement() {
+        document.onmouseup = null;
+        document.onmousemove = null;
+    }
+}
+
+const jogModalEl = document.getElementById('jogModal');
+const jogHeaderEl = document.getElementById('jogPanelHeader');
+if (jogModalEl && jogHeaderEl) {
+    makeElementDraggable(jogModalEl, jogHeaderEl);
+}
+
+// 2. Mode Switching Logic (Prepare, Setup, Run)
+function updateSetupCoordinates() {
+    const xVal = document.getElementById('setupPosX');
+    const yVal = document.getElementById('setupPosY');
+    const zVal = document.getElementById('setupPosZ');
+    const aVal = document.getElementById('setupPosA');
+    if (xVal) xVal.textContent = jogState.posX.toFixed(2);
+    if (yVal) yVal.textContent = jogState.posY.toFixed(2);
+    if (zVal) zVal.textContent = jogState.posZ.toFixed(2);
+    if (aVal) aVal.textContent = jogState.posA.toFixed(2);
+}
+
+function updateSetupBedVisualizer() {
+    const cursor = document.getElementById('simToolheadCursor');
+    const grid = document.getElementById('setupBedGraphicsGrid');
+    if (!cursor || !grid) return;
+    
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 960;
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770;
+    
+    // Convert machine coordinate space (Origin Bottom-Right, +X left, +Y up)
+    // to CSS percentage relative to the screen (0% left, 0% top).
+    // X axis: left = (bedW - X) / bedW
+    // Y axis: top = (bedH - Y) / bedH
+    const leftPct = Math.max(0, Math.min(100, ((bedW - jogState.posX) / bedW) * 100));
+    const topPct = Math.max(0, Math.min(100, ((bedH - jogState.posY) / bedH) * 100));
+    
+    cursor.style.left = `${leftPct}%`;
+    cursor.style.top = `${topPct}%`;
+    
+    // Highlight zone based on position
+    const col = Math.floor((bedW - jogState.posX) / (bedW / 3)) + 1; // 1 (Left), 2 (Middle), 3 (Right)
+    const row = Math.floor((bedH - jogState.posY) / (bedH / 2)) + 1; // 1 (Top), 2 (Bottom)
+    
+    let activeZone = 0;
+    if (row === 1) { // Top Row
+        if (col === 1) activeZone = 1;
+        else if (col === 2) activeZone = 2;
+        else if (col === 3) activeZone = 3;
+    } else { // Bottom Row
+        if (col === 1) activeZone = 4;
+        else if (col === 2) activeZone = 5;
+        else if (col === 3) activeZone = 6;
+    }
+    
+    document.querySelectorAll('.bed-graphics-zone').forEach(z => {
+        const zoneNum = parseInt(z.dataset.zone);
+        z.classList.toggle('active', zoneNum === activeZone);
+    });
+}
+
+function switchMode(mode) {
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+
+    const prepare = document.getElementById('prepareWorkspace');
+    const setup = document.getElementById('setupWorkspace');
+    const run = document.getElementById('runWorkspace');
+    const inspector = document.getElementById('propertiesInspector');
+
+    prepare.classList.add('hidden');
+    setup.classList.add('hidden');
+    run.classList.add('hidden');
+
+    const canvasContainer = document.getElementById('canvasContainer');
+
+    if (mode === 'prepare') {
+        prepare.classList.remove('hidden');
+        if (inspector) inspector.style.display = 'flex';
+        
+        const gcodePreview = document.getElementById('gcodePreview');
+        if (gcodePreview && canvasContainer) {
+            gcodePreview.appendChild(canvasContainer);
+        }
+        
+        const activeTabBtn = document.querySelector('.sub-tabs .tab.active');
+        if (activeTabBtn) {
+            const tabText = activeTabBtn.textContent.toLowerCase();
+            if (tabText.includes('draw')) window.switchTab('draw');
+            else if (tabText.includes('svg')) window.switchTab('svg-preview');
+            else if (tabText.includes('editor')) window.switchTab('editor');
+        } else {
+            window.switchTab('draw');
+        }
+    } else if (mode === 'setup') {
+        setup.classList.remove('hidden');
+        if (inspector) inspector.style.display = 'none';
+        
+        updateSetupCoordinates();
+        updateSetupBedVisualizer();
+    } else if (mode === 'run') {
+        run.classList.remove('hidden');
+        if (inspector) inspector.style.display = 'none';
+        
+        const runCanvasWrapper = document.getElementById('runCanvasWrapper');
+        if (runCanvasWrapper && canvasContainer) {
+            runCanvasWrapper.appendChild(canvasContainer);
+            canvasContainer.classList.remove('hidden');
+        }
+        
+        setTimeout(updateViewer, 50);
+    }
+}
+
+document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        switchMode(btn.dataset.mode);
+    });
+});
+
+
+
+// 5. Visual Bed Interactive Grid Clicks
+document.querySelectorAll('.bed-graphics-zone').forEach(zone => {
+    zone.addEventListener('click', () => {
+        const zoneNum = parseInt(zone.dataset.zone);
+        if (isNaN(zoneNum) || zoneNum < 1 || zoneNum > 6) return;
+
+        if (state.suctionMode === 'auto') {
+            state.suctionMode = 'manual';
+            seedManualZonesFromAuto();
+            log('Suction Bed: Clicking visual bed zone switched system to Manual override.', 'info');
+        }
+
+        state.suctionZones[zoneNum - 1] = !state.suctionZones[zoneNum - 1];
+        updateSuctionUI();
+        sendSuctionCommands();
+    });
+});
+
+// 6. Context-Sensitive Properties Inspector
+function updatePropertiesInspector() {
+    const inspectorContextDraw = document.getElementById('inspectorContextDraw');
+    const inspectorContextGlobal = document.getElementById('inspectorContextGlobal');
+    const inspectorTitle = document.getElementById('inspectorTitle');
+    const inspectorPanel = document.getElementById('propertiesInspector');
+    
+    if (!canvasEditor) return;
+    
+    const hasSelection = canvasEditor._sel && canvasEditor._sel.length > 0;
+    
+    if (hasSelection) {
+        if (inspectorPanel) inspectorPanel.classList.remove('collapsed');
+        if (inspectorContextGlobal) inspectorContextGlobal.classList.add('hidden');
+        if (inspectorContextDraw) inspectorContextDraw.classList.remove('hidden');
+        if (inspectorTitle) inspectorTitle.textContent = "Shape Properties";
+        
+        const selectedShape = canvasEditor.shapes.find(s => s.id === canvasEditor._sel[0]);
+        if (selectedShape) {
+            const objType = document.getElementById('inspectorObjectType');
+            if (objType) {
+                let displayType = selectedShape.type;
+                displayType = displayType.charAt(0).toUpperCase() + displayType.slice(1);
+                objType.textContent = displayType;
+            }
+            
+            const strokeInput = document.getElementById('drawStrokeWidth');
+            if (strokeInput) {
+                strokeInput.value = selectedShape.strokeWidth || 1.5;
+            }
+            
+            const method = selectedShape.method || 'thru_cut';
+            document.querySelectorAll('.method-toggle-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.value === method);
+            });
+        }
+    } else {
+        if (inspectorPanel) inspectorPanel.classList.add('collapsed');
+        if (inspectorContextDraw) inspectorContextDraw.classList.add('hidden');
+        if (inspectorContextGlobal) inspectorContextGlobal.classList.remove('hidden');
+        if (inspectorTitle) inspectorTitle.textContent = "Global Settings";
+    }
+}
+
+if (drawCanvasEl) {
+    drawCanvasEl.addEventListener('mouseup', () => {
+        setTimeout(updatePropertiesInspector, 20);
+    });
+}
+
+// 7. Execution Progress & ETA calculation
+function updateExecutionProgress() {
+    const total = state.pendingPackets ? state.pendingPackets.length : 0;
+    const current = state.base || 0;
+    
+    const segmentsLabel = document.getElementById('runSegmentsLabel');
+    const progressBar = document.getElementById('runProgressBar');
+    const etaLabel = document.getElementById('runETALabel');
+    const statusLabel = document.getElementById('runStatusLabel');
+    
+    if (segmentsLabel) {
+        segmentsLabel.textContent = `${current} / ${total} segments`;
+    }
+    
+    const pct = total > 0 ? (current / total) * 100 : 0;
+    if (progressBar) {
+        progressBar.style.width = `${pct}%`;
+    }
+    
+    if (statusLabel) {
+        if (state.isPaused) {
+            statusLabel.textContent = "PAUSED";
+            statusLabel.className = "status-tag tag-paused";
+        } else if (state.isSending) {
+            statusLabel.textContent = "RUNNING";
+            statusLabel.className = "status-tag tag-cutting";
+        } else {
+            statusLabel.textContent = "IDLE";
+            statusLabel.className = "status-tag tag-idle";
+        }
+    }
+    
+    if (etaLabel) {
+        if (state.isSending && total > 0 && current < total) {
+            const segmentLen = parseFloat(document.getElementById('segmentLengthInput')?.value) || 1.0;
+            const speed = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 22; // mm/s
+            const remainingDist = (total - current) * segmentLen;
+            const remainingSecs = speed > 0 ? remainingDist / speed : 0;
+            
+            const mins = Math.floor(remainingSecs / 60);
+            const secs = Math.floor(remainingSecs % 60);
+            const formattedMins = mins.toString().padStart(2, '0');
+            const formattedSecs = secs.toString().padStart(2, '0');
+            
+            etaLabel.textContent = `Time remaining: ${formattedMins}:${formattedSecs}`;
+        } else {
+            etaLabel.textContent = "Time remaining: --:--";
+        }
+    }
+}
+
+// Intercept stroke width change to update selected shapes in properties inspector
+const drawStrokeWidthInput = document.getElementById('drawStrokeWidth');
+if (drawStrokeWidthInput) {
+    drawStrokeWidthInput.addEventListener('input', () => {
+        const val = parseFloat(drawStrokeWidthInput.value) || 1.5;
+        if (canvasEditor && canvasEditor._sel && canvasEditor._sel.length > 0) {
+            canvasEditor.shapes.forEach(s => {
+                if (canvasEditor._sel.includes(s.id)) {
+                    s.strokeWidth = val;
+                }
+            });
+            canvasEditor.draw();
+        }
+    });
+}
+
+// Initial mode switch to Prepare
+switchMode('prepare');
