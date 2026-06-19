@@ -1786,45 +1786,9 @@ segmentLengthInput.addEventListener('input', (e) => { segmentLengthSlider.value 
 cuttingSpeedSlider.addEventListener('input', (e) => { cuttingSpeedInput.value = e.target.value; });
 cuttingSpeedInput.addEventListener('input', (e) => { cuttingSpeedSlider.value = e.target.value; });
 
-const maxXYSpeedSlider = document.getElementById('maxXYSpeedSlider');
-const maxXYSpeedInput = document.getElementById('maxXYSpeedInput');
-const maxZSpeedSlider = document.getElementById('maxZSpeedSlider');
-const maxZSpeedInput = document.getElementById('maxZSpeedInput');
-const maxRotationalSpeedSlider = document.getElementById('maxRotationalSpeedSlider');
-const maxRotationalSpeedInput = document.getElementById('maxRotationalSpeedInput');
-const accelerationSlider = document.getElementById('accelerationSlider');
-const accelerationInput = document.getElementById('accelerationInput');
-const accelerationZSlider = document.getElementById('accelerationZSlider');
-const accelerationZInput = document.getElementById('accelerationZInput');
-const accelerationASlider = document.getElementById('accelerationASlider');
-const accelerationAInput = document.getElementById('accelerationAInput');
 const junctionDeviationSlider = document.getElementById('junctionDeviationSlider');
 const junctionDeviationInput = document.getElementById('junctionDeviationInput');
 
-if (maxXYSpeedSlider && maxXYSpeedInput) {
-    maxXYSpeedSlider.addEventListener('input', (e) => { maxXYSpeedInput.value = e.target.value; });
-    maxXYSpeedInput.addEventListener('input', (e) => { maxXYSpeedSlider.value = e.target.value; });
-}
-if (maxZSpeedSlider && maxZSpeedInput) {
-    maxZSpeedSlider.addEventListener('input', (e) => { maxZSpeedInput.value = e.target.value; });
-    maxZSpeedInput.addEventListener('input', (e) => { maxZSpeedSlider.value = e.target.value; });
-}
-if (maxRotationalSpeedSlider && maxRotationalSpeedInput) {
-    maxRotationalSpeedSlider.addEventListener('input', (e) => { maxRotationalSpeedInput.value = e.target.value; });
-    maxRotationalSpeedInput.addEventListener('input', (e) => { maxRotationalSpeedSlider.value = e.target.value; });
-}
-if (accelerationSlider && accelerationInput) {
-    accelerationSlider.addEventListener('input', (e) => { accelerationInput.value = e.target.value; });
-    accelerationInput.addEventListener('input', (e) => { accelerationSlider.value = e.target.value; });
-}
-if (accelerationZSlider && accelerationZInput) {
-    accelerationZSlider.addEventListener('input', (e) => { accelerationZInput.value = e.target.value; });
-    accelerationZInput.addEventListener('input', (e) => { accelerationZSlider.value = e.target.value; });
-}
-if (accelerationASlider && accelerationAInput) {
-    accelerationASlider.addEventListener('input', (e) => { accelerationAInput.value = e.target.value; });
-    accelerationAInput.addEventListener('input', (e) => { accelerationASlider.value = e.target.value; });
-}
 if (junctionDeviationSlider && junctionDeviationInput) {
     junctionDeviationSlider.addEventListener('input', (e) => { junctionDeviationInput.value = e.target.value; });
     junctionDeviationInput.addEventListener('input', (e) => { junctionDeviationSlider.value = e.target.value; });
@@ -1833,17 +1797,12 @@ if (junctionDeviationSlider && junctionDeviationInput) {
 // Watch all config inputs for changes
 [
     segmentLengthSlider, segmentLengthInput, cuttingSpeedSlider, cuttingSpeedInput,
-    maxXYSpeedSlider, maxXYSpeedInput, maxZSpeedSlider, maxZSpeedInput,
-    maxRotationalSpeedSlider, maxRotationalSpeedInput,
-    accelerationSlider, accelerationInput,
-    accelerationZSlider, accelerationZInput,
-    accelerationASlider, accelerationAInput,
     junctionDeviationSlider, junctionDeviationInput,
     'bedWidthInput', 'bedHeightInput', 'gantryWidthInput', 'gantryHeightInput',
-    'xRs485Id', 'xStepsPerMM',
-    'yRs485Id', 'yStepsPerMM',
-    'zRs485Id', 'zStepsPerMM',
-    'aRs485Id', 'aStepsPerDeg',
+    'xRs485Id', 'xStepsPerMM', 'xMaxSpeed', 'xAcceleration',
+    'yRs485Id', 'yStepsPerMM', 'yMaxSpeed', 'yAcceleration',
+    'zRs485Id', 'zStepsPerMM', 'zMaxSpeed', 'zAcceleration',
+    'aRs485Id', 'aStepsPerDeg', 'aMaxSpeed', 'aAcceleration',
 ].forEach(idOrEl => {
     const el = typeof idOrEl === 'string' ? document.getElementById(idOrEl) : idOrEl;
     if (el) {

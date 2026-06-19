@@ -235,20 +235,16 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
                 const idA = parseInt(document.getElementById('aRs485Id')?.value) || 4;
 
-                const maxXYSpeedInput = document.getElementById('maxXYSpeedInput');
-                const maxZSpeedInput = document.getElementById('maxZSpeedInput');
-                const maxRotationalSpeedInput = document.getElementById('maxRotationalSpeedInput');
-                const maxXYSpeed = maxXYSpeedInput ? parseInt(maxXYSpeedInput.value) : 200;
-                const maxZSpeed = maxZSpeedInput ? parseInt(maxZSpeedInput.value) : 10;
-                const maxRotationalSpeed = maxRotationalSpeedInput ? parseInt(maxRotationalSpeedInput.value) : 720;
+                const maxXSpeed = parseFloat(document.getElementById('xMaxSpeed')?.value) || 200;
+                const maxYSpeed = parseFloat(document.getElementById('yMaxSpeed')?.value) || 200;
+                const maxZSpeed = parseFloat(document.getElementById('zMaxSpeed')?.value) || 20;
+                const maxRotationalSpeed = parseFloat(document.getElementById('aMaxSpeed')?.value) || 720;
 
-                const accelerationInput = document.getElementById('accelerationInput');
-                const accelerationZInput = document.getElementById('accelerationZInput');
-                const accelerationAInput = document.getElementById('accelerationAInput');
+                const accelerationX = parseFloat(document.getElementById('xAcceleration')?.value) || 1000.0;
+                const accelerationY = parseFloat(document.getElementById('yAcceleration')?.value) || 1000.0;
+                const accelerationZ = parseFloat(document.getElementById('zAcceleration')?.value) || 500.0;
+                const accelerationA = parseFloat(document.getElementById('aAcceleration')?.value) || 3000.0;
                 const junctionDeviationInput = document.getElementById('junctionDeviationInput');
-                const acceleration = accelerationInput ? parseFloat(accelerationInput.value) : 1000.0;
-                const accelerationZ = accelerationZInput ? parseFloat(accelerationZInput.value) : 500.0;
-                const accelerationA = accelerationAInput ? parseFloat(accelerationAInput.value) : 3000.0;
                 const junctionDeviation = junctionDeviationInput ? parseFloat(junctionDeviationInput.value) : 0.05;
 
                 // flipX/flipY are resolved above (with canvas-source override),
@@ -259,10 +255,12 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                     flipX: flipX,
                     flipY: flipY,
                     feedRate: cuttingSpeed, 
-                    maxXYSpeed: maxXYSpeed,
+                    maxXSpeed: maxXSpeed,
+                    maxYSpeed: maxYSpeed,
                     maxZSpeed: maxZSpeed,
                     maxRotationalSpeed: maxRotationalSpeed,
-                    acceleration: acceleration,
+                    accelerationX: accelerationX,
+                    accelerationY: accelerationY,
                     accelerationZ: accelerationZ,
                     accelerationA: accelerationA,
                     junctionDeviation: junctionDeviation,

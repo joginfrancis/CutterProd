@@ -510,91 +510,44 @@
                 <button id="btnCloseModal" class="btn-icon">&times;</button>
             </div>
             <div class="modal-body">
-                <div class="form-group">
-                    <label for="segmentLengthInput">Segment Length (mm):</label>
-                    <div class="slider-input-group">
-                        <input type="range" id="segmentLengthSlider" value="1.0" step="0.1" min="0.1" max="10.0">
-                        <input type="number" id="segmentLengthInput" value="1.0" step="0.1" min="0.1" max="10.0">
-                    </div>
-                    <span class="help-text">Subdivision length for trajectory paths. Smaller is smoother but larger
-                        file.</span>
-                </div>
-                <div class="form-group">
-                    <label for="cuttingSpeedInput">Cutting Speed (mm/sec):</label>
-                    <div class="slider-input-group">
-                        <input type="range" id="cuttingSpeedSlider" value="22" step="1" min="1" max="200">
-                        <input type="number" id="cuttingSpeedInput" value="22" step="1" min="1" max="200">
-                    </div>
-                    <span class="help-text">Target speed for cutting moves (normalized velocity).</span>
-                </div>
-
-                <div class="form-group">
-                    <label for="maxXYSpeedInput">Max XY Speed (mm/sec):</label>
-                    <div class="slider-input-group">
-                        <input type="range" id="maxXYSpeedSlider" value="200" step="10" min="10" max="1000">
-                        <input type="number" id="maxXYSpeedInput" value="200" step="1" min="10" max="1000">
-                    </div>
-                    <span class="help-text">Maximum physical speed for X and Y axes to prevent stalling.</span>
-                </div>
-
-                <div class="form-group">
-                    <label for="maxZSpeedInput">Max Z Speed (mm/sec):</label>
-                    <div class="slider-input-group">
-                        <input type="range" id="maxZSpeedSlider" value="20" step="1" min="1" max="150">
-                        <input type="number" id="maxZSpeedInput" value="20" step="1" min="1" max="150">
-                    </div>
-                    <span class="help-text">Maximum physical speed for Z axis (leadscrew drive).</span>
-                </div>
-
-                <div class="form-group">
-                    <label for="maxRotationalSpeedInput">Max Rotational Speed (deg/sec):</label>
-                    <div class="slider-input-group">
-                        <input type="range" id="maxRotationalSpeedSlider" value="720" step="10" min="10" max="2000">
-                        <input type="number" id="maxRotationalSpeedInput" value="720" step="1" min="10" max="2000">
-                    </div>
-                    <span class="help-text">Maximum physical speed for the A axis (tangential rotation).</span>
-                </div>
-
-                <div class="form-group">
-                    <label for="accelerationInput">Max XY Acceleration (mm/sec²):</label>
-                    <div class="slider-input-group">
-                        <input type="range" id="accelerationSlider" value="1000" step="50" min="100" max="5000">
-                        <input type="number" id="accelerationInput" value="1000" step="1" min="100" max="5000">
-                    </div>
-                    <span class="help-text">Maximum XY acceleration to ramp speed up/down smoothly.</span>
-                </div>
-
-                <div class="form-group">
-                    <label for="accelerationZInput">Max Z Acceleration (mm/sec²):</label>
-                    <div class="slider-input-group">
-                        <input type="range" id="accelerationZSlider" value="500" step="50" min="50" max="2000">
-                        <input type="number" id="accelerationZInput" value="500" step="1" min="50" max="2000">
-                    </div>
-                    <span class="help-text">Maximum acceleration for Z axis plunge/lift.</span>
-                </div>
-
-                <div class="form-group">
-                    <label for="accelerationAInput">Max Rotational Acceleration (deg/sec²):</label>
-                    <div class="slider-input-group">
-                        <input type="range" id="accelerationASlider" value="3000" step="100" min="100" max="10000">
-                        <input type="number" id="accelerationAInput" value="3000" step="1" min="100" max="10000">
-                    </div>
-                    <span class="help-text">Maximum acceleration for tangential knife rotations.</span>
-                </div>
-
-                <div class="form-group">
-                    <label for="junctionDeviationInput">Junction Deviation (mm):</label>
-                    <div class="slider-input-group">
-                        <input type="range" id="junctionDeviationSlider" value="0.05" step="0.01" min="0.01" max="0.5">
-                        <input type="number" id="junctionDeviationInput" value="0.05" step="0.01" min="0.01" max="0.5">
-                    </div>
-                    <span class="help-text">Controls cornering speed. Lower values are slower and sharper.</span>
-                </div>
-                <hr class="modal-divider">
-
+                <!-- Active Job Settings -->
                 <div class="axis-group">
+                    <div class="axis-group-label">Active Job Settings</div>
+                    <div class="form-group" style="margin-top: 0.5rem;">
+                        <label for="segmentLengthInput">Segment Length (mm):</label>
+                        <div class="slider-input-group">
+                            <input type="range" id="segmentLengthSlider" value="1.0" step="0.1" min="0.1" max="10.0">
+                            <input type="number" id="segmentLengthInput" value="1.0" step="0.1" min="0.1" max="10.0">
+                        </div>
+                        <span class="help-text">Subdivision length for trajectory paths. Smaller is smoother but larger file.</span>
+                    </div>
+                    <div class="form-group" style="margin-top: 0.5rem;">
+                        <label for="cuttingSpeedInput">Cutting Speed (mm/sec):</label>
+                        <div class="slider-input-group">
+                            <input type="range" id="cuttingSpeedSlider" value="22" step="1" min="1" max="200">
+                            <input type="number" id="cuttingSpeedInput" value="22" step="1" min="1" max="200">
+                        </div>
+                        <span class="help-text">Target speed for cutting moves (normalized velocity).</span>
+                    </div>
+                </div>
+
+                <!-- Kinematics & Cornering -->
+                <div class="axis-group" style="margin-top: 1rem;">
+                    <div class="axis-group-label">Kinematics & Cornering</div>
+                    <div class="form-group" style="margin-top: 0.5rem;">
+                        <label for="junctionDeviationInput">Junction Deviation (mm):</label>
+                        <div class="slider-input-group">
+                            <input type="range" id="junctionDeviationSlider" value="0.05" step="0.01" min="0.01" max="0.5">
+                            <input type="number" id="junctionDeviationInput" value="0.05" step="0.01" min="0.01" max="0.5">
+                        </div>
+                        <span class="help-text">Controls cornering speed. Lower values are slower and sharper.</span>
+                    </div>
+                </div>
+
+                <!-- Physical Dimensions -->
+                <div class="axis-group" style="margin-top: 1rem;">
                     <div class="axis-group-label">Physical Dimensions</div>
-                    <div class="axis-row" style="grid-template-columns: repeat(4, 1fr);">
+                    <div class="axis-row" style="grid-template-columns: repeat(4, 1fr); margin-top: 0.5rem;">
                         <div class="axis-cell">
                             <input type="number" id="bedWidthInput" value="960" step="10" min="100">
                             <span>Bed Width (mm)</span>
@@ -624,60 +577,96 @@
                     </div>
                     <span class="help-text" style="display: block; margin-top: 4px;">Uncheck X if your machine origin is on the left. Uncheck Y if your origin is at the top.</span>
                 </div>
-                <hr class="modal-divider">
 
-                <div class="axis-group">
-                    <div class="axis-group-label">X-Axis</div>
-                    <div class="axis-row">
-                        <div class="axis-cell">
-                            <input type="number" id="xRs485Id" value="3" step="1" min="1" max="255">
-                            <span>RS485 ID</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="xStepsPerMM" value="160" step="0.1" min="0.1">
-                            <span>Steps/MM</span>
+                <!-- Axis Configuration Matrix -->
+                <div class="axis-group" style="margin-top: 1rem;">
+                    <div class="axis-group-label">Axis Configuration</div>
+                    
+                    <div class="axis-group" style="margin-top: 0.5rem;">
+                        <div class="axis-group-label" style="font-size: 0.72rem; color: #94a3b8; border-bottom: none; padding-bottom: 0;">X-Axis</div>
+                        <div class="axis-row">
+                            <div class="axis-cell">
+                                <input type="number" id="xRs485Id" value="3" step="1" min="1" max="255">
+                                <span>RS485 ID</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="xStepsPerMM" value="160" step="0.1" min="0.1">
+                                <span>Steps/MM</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="xMaxSpeed" value="200" step="1" min="10" max="1000">
+                                <span>Max Speed (mm/s)</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="xAcceleration" value="1000" step="10" min="100" max="5000">
+                                <span>Max Accel (mm/s²)</span>
+                            </div>
                         </div>
                     </div>
-                </div>
 
-                <div class="axis-group">
-                    <div class="axis-group-label">Y-Axis</div>
-                    <div class="axis-row">
-                        <div class="axis-cell">
-                            <input type="number" id="yRs485Id" value="2" step="1" min="1" max="255">
-                            <span>RS485 ID</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="yStepsPerMM" value="160" step="0.1" min="0.1">
-                            <span>Steps/MM</span>
+                    <div class="axis-group" style="margin-top: 0.5rem;">
+                        <div class="axis-group-label" style="font-size: 0.72rem; color: #94a3b8; border-bottom: none; padding-bottom: 0;">Y-Axis</div>
+                        <div class="axis-row">
+                            <div class="axis-cell">
+                                <input type="number" id="yRs485Id" value="2" step="1" min="1" max="255">
+                                <span>RS485 ID</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="yStepsPerMM" value="160" step="0.1" min="0.1">
+                                <span>Steps/MM</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="yMaxSpeed" value="200" step="1" min="10" max="1000">
+                                <span>Max Speed (mm/s)</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="yAcceleration" value="1000" step="10" min="100" max="5000">
+                                <span>Max Accel (mm/s²)</span>
+                            </div>
                         </div>
                     </div>
-                </div>
 
-                <div class="axis-group">
-                    <div class="axis-group-label">Z-Axis</div>
-                    <div class="axis-row">
-                        <div class="axis-cell">
-                            <input type="number" id="zRs485Id" value="1" step="1" min="1" max="255">
-                            <span>RS485 ID</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="zStepsPerMM" value="400" step="0.1" min="0.1">
-                            <span>Steps/MM</span>
+                    <div class="axis-group" style="margin-top: 0.5rem;">
+                        <div class="axis-group-label" style="font-size: 0.72rem; color: #94a3b8; border-bottom: none; padding-bottom: 0;">Z-Axis</div>
+                        <div class="axis-row">
+                            <div class="axis-cell">
+                                <input type="number" id="zRs485Id" value="1" step="1" min="1" max="255">
+                                <span>RS485 ID</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="zStepsPerMM" value="400" step="0.1" min="0.1">
+                                <span>Steps/MM</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="zMaxSpeed" value="20" step="1" min="1" max="150">
+                                <span>Max Speed (mm/s)</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="zAcceleration" value="500" step="10" min="50" max="2000">
+                                <span>Max Accel (mm/s²)</span>
+                            </div>
                         </div>
                     </div>
-                </div>
 
-                <div class="axis-group">
-                    <div class="axis-group-label">Rotary (A)</div>
-                    <div class="axis-row">
-                        <div class="axis-cell">
-                            <input type="number" id="aRs485Id" value="4" step="1" min="1" max="255">
-                            <span>RS485 ID</span>
-                        </div>
-                        <div class="axis-cell">
-                            <input type="number" id="aStepsPerDeg" value="103" step="0.1" min="0.1">
-                            <span>Steps/Deg</span>
+                    <div class="axis-group" style="margin-top: 0.5rem;">
+                        <div class="axis-group-label" style="font-size: 0.72rem; color: #94a3b8; border-bottom: none; padding-bottom: 0;">Rotary (A)</div>
+                        <div class="axis-row">
+                            <div class="axis-cell">
+                                <input type="number" id="aRs485Id" value="4" step="1" min="1" max="255">
+                                <span>RS485 ID</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="aStepsPerDeg" value="103" step="0.1" min="0.1">
+                                <span>Steps/Deg</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="aMaxSpeed" value="720" step="10" min="10" max="2000">
+                                <span>Max Speed (°/s)</span>
+                            </div>
+                            <div class="axis-cell">
+                                <input type="number" id="aAcceleration" value="3000" step="10" min="100" max="10000">
+                                <span>Max Accel (°/s²)</span>
+                            </div>
                         </div>
                     </div>
                 </div>

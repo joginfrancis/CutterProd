@@ -225,27 +225,35 @@ class SvgConverter {
     this.decimals = 4;
 
     // Profiling Config
-    this.acceleration = options.acceleration !== undefined ? options.acceleration : 1000.0;
+    const defaultAccel = options.acceleration !== undefined ? options.acceleration : 1000.0;
+    this.accelerationX = options.accelerationX !== undefined ? options.accelerationX : defaultAccel;
+    this.accelerationY = options.accelerationY !== undefined ? options.accelerationY : defaultAccel;
+    this.acceleration = Math.min(this.accelerationX, this.accelerationY);
     this.accelerationZ = options.accelerationZ !== undefined ? options.accelerationZ : 500.0;
     this.accelerationA = options.accelerationA !== undefined ? options.accelerationA : 3000.0;
     this.junctionDeviation = options.junctionDeviation !== undefined ? options.junctionDeviation : 0.05;
     
     // Limits
-    this.maxXYSpeed = options.maxXYSpeed !== undefined ? options.maxXYSpeed : (options.maxLinearSpeed !== undefined ? options.maxLinearSpeed : 200);
+    const defaultSpeed = options.maxXYSpeed !== undefined ? options.maxXYSpeed : (options.maxLinearSpeed !== undefined ? options.maxLinearSpeed : 200);
+    this.maxXSpeed = options.maxXSpeed !== undefined ? options.maxXSpeed : defaultSpeed;
+    this.maxYSpeed = options.maxYSpeed !== undefined ? options.maxYSpeed : defaultSpeed;
     this.maxZSpeed = options.maxZSpeed !== undefined ? options.maxZSpeed : 10;
     this.maxRotationalSpeed = options.maxRotationalSpeed !== undefined ? options.maxRotationalSpeed : 720;
     
     // F5: Hard-cap speeds based on physical RS485 bandwidth limit (~80 kHz max step rate)
     const maxPhysicalStepRate = 75000;
     
-    const maxSpsPerMM_XY = Math.max(this.stepsPerMM_X, this.stepsPerMM_Y);
-    this.maxXYSpeed = Math.min(this.maxXYSpeed, maxPhysicalStepRate / maxSpsPerMM_XY);
+    this.maxXSpeed = Math.min(this.maxXSpeed, maxPhysicalStepRate / this.stepsPerMM_X);
+    this.maxYSpeed = Math.min(this.maxYSpeed, maxPhysicalStepRate / this.stepsPerMM_Y);
     this.maxZSpeed = Math.min(this.maxZSpeed, maxPhysicalStepRate / this.stepsPerMM_Z);
     this.maxRotationalSpeed = Math.min(this.maxRotationalSpeed, maxPhysicalStepRate / this.stepsPerDeg_A);
     
+    // Combined limit for XY path planning
+    this.maxXYSpeed = Math.min(this.maxXSpeed, this.maxYSpeed);
+    
     // Automate Max Steps (Per Command) to guarantee a response window of ~0.4s:
-    const maxXStepRate = this.maxXYSpeed * this.stepsPerMM_X;
-    const maxYStepRate = this.maxXYSpeed * this.stepsPerMM_Y;
+    const maxXStepRate = this.maxXSpeed * this.stepsPerMM_X;
+    const maxYStepRate = this.maxYSpeed * this.stepsPerMM_Y;
     const maxZStepRate = this.maxZSpeed * this.stepsPerMM_Z;
     const maxLinearStepRateTotal = Math.max(maxXStepRate, maxYStepRate, maxZStepRate);
     
@@ -1194,8 +1202,8 @@ class SvgConverter {
 
               // Enforce physical maximum speeds per-axis to prevent motor stalling
               if (duration > 0) {
-                  const maxSpsX = this.maxXYSpeed * this.stepsPerMM_X;
-                  const maxSpsY = this.maxXYSpeed * this.stepsPerMM_Y;
+                  const maxSpsX = this.maxXSpeed * this.stepsPerMM_X;
+                  const maxSpsY = this.maxYSpeed * this.stepsPerMM_Y;
                   const maxSpsZ = this.maxZSpeed * this.stepsPerMM_Z;
                   const maxSpsA = this.maxRotationalSpeed * this.stepsPerDeg_A;
 
