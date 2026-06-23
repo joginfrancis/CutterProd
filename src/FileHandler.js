@@ -79,8 +79,10 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 svg.style.height = '100%';
                 
                 const svgPreview = document.getElementById('svgPreview');
-                svgPreview.innerHTML = ''; 
-                svgPreview.appendChild(svg);
+                if (svgPreview) {
+                    svgPreview.innerHTML = ''; 
+                    svgPreview.appendChild(svg);
+                }
             }
 
             // 3. Determine Dimensions (Complex!)

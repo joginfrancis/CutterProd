@@ -162,6 +162,9 @@ function shapeBBox(shape) {
             const ys = [shape.y1, shape.cy1, shape.cy2, shape.y2];
             return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
         }
+        case 'image': {
+            return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+        }
         default: return { x: 0, y: 0, w: 0, h: 0 };
     }
 }
@@ -191,6 +194,9 @@ function translateShape(shape, dx, dy) {
             shape.cx1 += dx; shape.cy1 += dy;
             shape.cx2 += dx; shape.cy2 += dy;
             shape.x2 += dx; shape.y2 += dy;
+            break;
+        case 'image':
+            shape.x += dx; shape.y += dy;
             break;
     }
 }
@@ -233,6 +239,15 @@ function scaleShape(shape, sx, sy, ox, oy) {
             shape.cx2 = ox + (shape.cx2 - ox) * sx; shape.cy2 = oy + (shape.cy2 - oy) * sy;
             shape.x2 = ox + (shape.x2 - ox) * sx; shape.y2 = oy + (shape.y2 - oy) * sy;
             break;
+        case 'image': {
+            let cx1 = ox + (shape.x - ox) * sx; let cy1 = oy + (shape.y - oy) * sy;
+            let cx2 = ox + (shape.x + shape.w - ox) * sx; let cy2 = oy + (shape.y + shape.h - oy) * sy;
+            shape.x = Math.min(cx1, cx2);
+            shape.y = Math.min(cy1, cy2);
+            shape.w = Math.abs(cx2 - cx1);
+            shape.h = Math.abs(cy2 - cy1);
+            break;
+        }
     }
 }
 
@@ -291,6 +306,10 @@ function hitTest(shape, mx, my, tol = 4) {
             }
             return false;
         }
+        case 'image': {
+            const { x, y, w, h } = shape;
+            return mx >= x - tol && mx <= x + w + tol && my >= y - tol && my <= y + h + tol;
+        }
         default: return false;
     }
 }
@@ -307,7 +326,7 @@ export class CanvasEditor {
         this.ctx      = canvas.getContext('2d');
         this.view     = viewState; // shared live object updated from Viewer metrics
         this.shapes   = [];
-        this.tool     = 'pencil';
+        this.tool     = 'select';
         this.strokeWidth = 1.5; // mm
         this.currentMethod = 'thru_cut';
 
@@ -344,6 +363,7 @@ export class CanvasEditor {
         this._onKey    = this._onKey.bind(this);
         this._onDblClick = this._onDblClick.bind(this);
         this._onWheel  = this._onWheel.bind(this);
+        this._onContextMenu = e => e.preventDefault();
     }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -355,6 +375,7 @@ export class CanvasEditor {
         this.canvas.addEventListener('dblclick',   this._onDblClick);
         this.canvas.addEventListener('wheel', this._onWheel, { passive: false });
         window.addEventListener('keydown', this._onKey);
+        this.canvas.addEventListener('contextmenu', this._onContextMenu);
         this.canvas.style.cursor = this._cursorForTool();
         this.draw();
     }
@@ -366,6 +387,7 @@ export class CanvasEditor {
         this.canvas.removeEventListener('dblclick',   this._onDblClick);
         this.canvas.removeEventListener('wheel', this._onWheel);
         window.removeEventListener('keydown', this._onKey);
+        this.canvas.removeEventListener('contextmenu', this._onContextMenu);
     }
 
     setTool(tool) {
@@ -391,12 +413,33 @@ export class CanvasEditor {
 
     _emitChange() {
         if (this.onChange) this.onChange();
+        this.canvas.dispatchEvent(new CustomEvent('editor:changed', { bubbles: true }));
     }
 
     setStrokeWidth(w) { this.strokeWidth = w; }
     setEraserRadius(r) { this.eraserRadius = r; }
 
     clearAll() { this.shapes = []; this._sel = []; this.draw(); }
+
+    addImage(img, x, y, w, h) {
+        const id = makeId();
+        const shape = {
+            id,
+            type: 'image',
+            img,
+            x,
+            y,
+            w,
+            h,
+            strokeWidth: 0,
+            method: 'none',
+            name: 'Background Image'
+        };
+        this.shapes.push(shape);
+        this.draw();
+        this._emitChange();
+        return id;
+    }
 
     setShapeMethod(method) {
         if (this._sel.length > 0) {
@@ -510,36 +553,43 @@ export class CanvasEditor {
         const cx = e.clientX - r.left;
         const cy = e.clientY - r.top;
 
-        const mx = this.view.bedW - ((cx - this.view.offsetX) / this.view.scale);
-        const my = (this.view.offsetY - cy) / this.view.scale;
-
-        const zoomFactor = 1.1;
-        if (e.deltaY < 0) {
-            this.view.scale *= zoomFactor;
+        // Check if trackpad two-finger swipe panning (if e.ctrlKey is false and e.deltaX is non-zero)
+        if (!e.ctrlKey && Math.abs(e.deltaX) > 0.5) {
+            this.view.offsetX -= e.deltaX;
+            this.view.offsetY -= e.deltaY;
         } else {
-            this.view.scale /= zoomFactor;
-        }
-        
-        // Clamp scale to reasonable bounds
-        this.view.scale = Math.max(0.01, Math.min(this.view.scale, 100));
+            // Zoom (smooth exponential)
+            const mx = this.view.bedW - ((cx - this.view.offsetX) / this.view.scale);
+            const my = (this.view.offsetY - cy) / this.view.scale;
 
-        this.view.offsetX = cx - mx * this.view.scale;
-        this.view.offsetY = cy + my * this.view.scale;
+            const factor = Math.exp(-e.deltaY * 0.003);
+            this.view.scale *= factor;
+            
+            // Clamp scale
+            this.view.scale = Math.max(0.05, Math.min(this.view.scale, 50));
+
+            this.view.offsetX = cx - (this.view.bedW - mx) * this.view.scale;
+            this.view.offsetY = cy + my * this.view.scale;
+        }
 
         this.draw();
     }
 
     _onDown(e) {
-        if (e.button === 1 || (e.button === 0 && e.altKey)) {
+        // Pan using Middle-click (1), Right-click (2), or Alt+Left-click (0)
+        if (e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey)) {
             this._isPanning = true;
             this._panStart = { x: e.clientX, y: e.clientY };
             this.canvas.style.cursor = 'grabbing';
+            e.preventDefault();
             return;
         }
 
         const m = this._eventPos(e);
         const mc = this._clamp(m.x, m.y);
         this._isDown = true;
+
+        // Drawing tools always draw — users use the Select tool (V key) to select shapes.
 
         if (this.tool === 'select') {
             const handle = this._getHandleAt(m.x, m.y, 8 / this.view.scale);
@@ -788,12 +838,14 @@ export class CanvasEditor {
 
         if (this.tool === 'eraser' || this.tool === 'select') return;
 
+        let shapeAdded = false;
         if (this._draft) {
             // Only commit if shape has some extent
             const bbox = shapeBBox(this._draft);
             const minExtent = 0.5; // mm
-            if (bbox.w > minExtent || bbox.h > minExtent || this._draft.type === 'pencil' && this._draftPts.length > 2) {
+            if (bbox.w > minExtent || bbox.h > minExtent || (this._draft.type === 'pencil' && this._draftPts.length > 2)) {
                 this.shapes.push(this._draft);
+                shapeAdded = true;
             }
         }
 
@@ -803,6 +855,12 @@ export class CanvasEditor {
 
         // Notify external listener so G-code can be regenerated
         this._emitChange();
+
+        // Switch to select tool if no shape was actually added (meaning they just clicked empty space)
+        if (!shapeAdded && this.tool !== 'bezier') {
+            this.setTool('select');
+            if (this.onToolChange) this.onToolChange('select');
+        }
     }
 
     _onDblClick() {
@@ -821,6 +879,7 @@ export class CanvasEditor {
             }
         }
         if (e.key === 'Escape') {
+            if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
             this._sel        = [];
             this._draft      = null;
             this._bezierPts  = [];
@@ -828,7 +887,10 @@ export class CanvasEditor {
             this._isDown     = false;
             this._marqueeStart = null;
             this._marqueeEnd = null;
+            this.setTool('select');
             this.draw();
+            this._emitChange();
+            if (this.onToolChange) this.onToolChange('select');
         }
     }
 
@@ -1050,6 +1112,13 @@ export class CanvasEditor {
         ctx.beginPath();
 
         switch (shape.type) {
+            case 'image': {
+                const { img, x, y, w, h } = shape;
+                if (img) {
+                    ctx.drawImage(img, mapX(x + w), mapY(y + h), w * scale, h * scale);
+                }
+                break;
+            }
             case 'pencil': {
                 if (shape.points.length < 2) break;
                 const [p0, ...rest] = shape.points;
@@ -1139,7 +1208,7 @@ export class CanvasEditor {
         const fx = x => (bedW - x);
         const fy = y => (bedH - y);
         
-        const flatShapes = this._flattenShapes(this.shapes);
+        const flatShapes = this._flattenShapes(this.shapes).filter(s => s.type !== 'image');
         const elements = flatShapes
             .map(s => {
                 if (s.type === 'circle') {
@@ -1164,23 +1233,49 @@ ${elements}
     }
 
     importSVG(svgText) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(svgText, 'image/svg+xml');
-        
-        const { bedW, bedH } = this.view;
-        
-        const svg = doc.querySelector('svg');
-        let vbW = bedW, vbH = bedH;
-        let scale = 1.0;
-        let offsetX = 0;
-        let offsetY = 0;
-        
-        if (svg) {
+        try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(svgText, 'image/svg+xml');
+            
+            // If parser error (during typing), exit gracefully
+            if (doc.querySelector('parsererror')) {
+                return;
+            }
+
+            const { bedW, bedH } = this.view;
+            const svg = doc.querySelector('svg');
+            if (!svg) return;
+
+            // Clear shapes for a fresh SVG import
+            this.shapes = [];
+            this._sel = [];
+
+            let vbW = bedW, vbH = bedH;
+            let scale = 1.0;
+            let offsetX = 0;
+            let offsetY = 0;
+
+            const parseToMM = (str) => {
+                if (!str) return 0;
+                const val = parseFloat(str);
+                if (isNaN(val)) return 0;
+                if (str.endsWith('mm')) return val;
+                if (str.endsWith('cm')) return val * 10;
+                if (str.endsWith('in')) return val * 25.4;
+                if (str.endsWith('pt')) return val * (25.4 / 72);
+                if (str.endsWith('pc')) return val * (25.4 / 6);
+                if (str.endsWith('px')) return val * 0.264583;
+                return val; // Assume mm if no unit provided
+            };
+
             const isCanvas = svg.getAttribute('data-source') === 'canvas';
             if (!isCanvas) {
-                const wAttr = parseFloat(svg.getAttribute('width')) || bedW;
-                const hAttr = parseFloat(svg.getAttribute('height')) || bedH;
+                const wAttr = svg.getAttribute('width');
+                const hAttr = svg.getAttribute('height');
+                const w_mm = parseToMM(wAttr) || bedW;
+                const h_mm = parseToMM(hAttr) || bedH;
                 const vbAttr = svg.getAttribute('viewBox');
+
                 if (vbAttr) {
                     const vb = vbAttr.split(/[\s,]+/).map(parseFloat);
                     if (vb.length === 4) {
@@ -1188,187 +1283,201 @@ ${elements}
                         vbH = vb[3];
                     }
                 } else {
-                    vbW = wAttr;
-                    vbH = hAttr;
+                    vbW = w_mm;
+                    vbH = h_mm;
                 }
-                
+
+                // Initial scale (unit conversion)
+                scale = (vbW > 0) ? (w_mm / vbW) : 1.0;
+
+                // Center and Auto-Fit to bed
                 const margin = 10;
-                if (vbW > (bedW - margin) || vbH > (bedH - margin)) {
-                    const scaleW = (bedW - margin) / vbW;
-                    const scaleH = (bedH - margin) / vbH;
-                    scale = Math.min(scaleW, scaleH);
-                    offsetX = (bedW - (vbW * scale)) / 2;
-                    offsetY = (bedH - (vbH * scale)) / 2;
+                let currentW = vbW * scale;
+                let currentH = vbH * scale;
+                if (currentW > (bedW - margin) || currentH > (bedH - margin)) {
+                    const scaleW = (bedW - margin) / currentW;
+                    const scaleH = (bedH - margin) / currentH;
+                    const fitScale = Math.min(scaleW, scaleH);
+                    scale *= fitScale;
                 }
+
+                // Final offsetX & offsetY centering offsets
+                offsetX = (bedW - (vbW * scale)) / 2;
+                offsetY = (bedH - (vbH * scale)) / 2;
+
+                const vbMinX = vbAttr && vb.length === 4 ? vb[0] : 0;
+                const vbMinY = vbAttr && vb.length === 4 ? vb[1] : 0;
+                offsetX = offsetX - (vbMinX * scale);
+                offsetY = offsetY - (vbMinY * scale);
             }
-        }
 
-        const tx = x => (x * scale) + offsetX;
-        const ty = y => (y * scale) + offsetY;
-        const fx = x => bedW - tx(x);
-        const fy = y => bedH - ty(y); // Flip Y to Machine coordinates
+            const tx = x => (x * scale) + offsetX;
+            const ty = y => (y * scale) + offsetY;
+            const fx = x => bedW - tx(x);
+            const fy = y => bedH - ty(y); // Flip Y to Machine coordinates
 
-        // Use SvgConverter's robust parser to flatten all paths
-        const converter = new SvgConverter();
+            // Use SvgConverter's robust parser to flatten all paths
+            const converter = new SvgConverter();
 
-        const paths = doc.querySelectorAll('path');
-        paths.forEach(p => {
-            const d = p.getAttribute('d');
-            if (!d) return;
-            const strokeWidth = parseFloat(p.getAttribute('stroke-width')) || 1.5;
-            const method = p.getAttribute('data-method') || 'thru_cut';
-            
-            const commands = converter.parsePathData(d);
-            
-            let currentPathPts = [];
-            let startPt = null;
-            let cur = {x:0, y:0};
-            
-            commands.forEach(cmd => {
-                const isRelative = (cmd.type === cmd.type.toLowerCase());
-                const type = cmd.type.toUpperCase();
-                const args = cmd.args;
+            const paths = doc.querySelectorAll('path');
+            paths.forEach(p => {
+                const d = p.getAttribute('d');
+                if (!d) return;
+                const strokeWidth = parseFloat(p.getAttribute('stroke-width')) || 1.5;
+                const method = p.getAttribute('data-method') || 'thru_cut';
                 
-                const getPt = (idx) => isRelative 
-                    ? { x: cur.x + args[idx], y: cur.y + args[idx+1] }
-                    : { x: args[idx], y: args[idx+1] };
-
-                if (type === 'M') {
-                    if (currentPathPts.length > 0) {
-                        let shape;
-                        if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
-                        else shape = makePencil(currentPathPts, strokeWidth);
-                        shape.method = method;
-                        this.shapes.push(shape);
-                        currentPathPts = [];
-                    }
-                    const pt = getPt(0);
-                    cur = pt;
-                    startPt = pt;
-                    currentPathPts.push({ x: fx(pt.x), y: fy(pt.y) });
+                const commands = converter.parsePathData(d);
+                
+                let currentPathPts = [];
+                let startPt = null;
+                let cur = {x:0, y:0};
+                
+                commands.forEach(cmd => {
+                    const isRelative = (cmd.type === cmd.type.toLowerCase());
+                    const type = cmd.type.toUpperCase();
+                    const args = cmd.args;
                     
-                    // Subsequent coordinates in M/m are treated as L/l
-                    for (let k = 2; k < args.length; k += 2) {
-                        const ptNext = getPt(k);
-                        cur = ptNext;
-                        currentPathPts.push({ x: fx(ptNext.x), y: fy(ptNext.y) });
-                    }
-                } else if (type === 'L') {
-                    for (let k = 0; k < args.length; k += 2) {
-                        const pt = getPt(k);
+                    const getPt = (idx) => isRelative 
+                        ? { x: cur.x + args[idx], y: cur.y + args[idx+1] }
+                        : { x: args[idx], y: args[idx+1] };
+
+                    if (type === 'M') {
+                        if (currentPathPts.length > 0) {
+                            let shape;
+                            if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
+                            else shape = makePencil(currentPathPts, strokeWidth);
+                            shape.method = method;
+                            this.shapes.push(shape);
+                            currentPathPts = [];
+                        }
+                        const pt = getPt(0);
                         cur = pt;
+                        startPt = pt;
                         currentPathPts.push({ x: fx(pt.x), y: fy(pt.y) });
-                    }
-                } else if (type === 'H') {
-                    for (let k = 0; k < args.length; k += 1) {
-                        cur.x = isRelative ? cur.x + args[k] : args[k];
-                        currentPathPts.push({ x: fx(cur.x), y: fy(cur.y) });
-                    }
-                } else if (type === 'V') {
-                    for (let k = 0; k < args.length; k += 1) {
-                        cur.y = isRelative ? cur.y + args[k] : args[k];
-                        currentPathPts.push({ x: fx(cur.x), y: fy(cur.y) });
-                    }
-                } else if (type === 'Z') {
-                    if (startPt) {
-                        cur = { ...startPt };
-                        currentPathPts.push({ x: fx(cur.x), y: fy(cur.y) });
-                    }
-                    if (currentPathPts.length > 0) {
-                        let shape;
-                        if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
-                        else shape = makePencil(currentPathPts, strokeWidth);
-                        shape.method = method;
-                        this.shapes.push(shape);
-                        currentPathPts = [];
-                    }
-                } else if (type === 'C' || type === 'S' || type === 'Q' || type === 'T') {
-                    // Approximate curves by linking endpoints for canvas preview
-                    const ptsPerCmd = (type === 'C') ? 6 : ((type === 'S' || type === 'Q') ? 4 : 2);
-                    for (let k = 0; k < args.length; k += ptsPerCmd) {
-                        const endIdx = k + ptsPerCmd - 2;
-                        if (endIdx < args.length) {
-                            const pt = getPt(endIdx);
+                        
+                        // Subsequent coordinates in M/m are treated as L/l
+                        for (let k = 2; k < args.length; k += 2) {
+                            const ptNext = getPt(k);
+                            cur = ptNext;
+                            currentPathPts.push({ x: fx(ptNext.x), y: fy(ptNext.y) });
+                        }
+                    } else if (type === 'L') {
+                        for (let k = 0; k < args.length; k += 2) {
+                            const pt = getPt(k);
                             cur = pt;
                             currentPathPts.push({ x: fx(pt.x), y: fy(pt.y) });
                         }
+                    } else if (type === 'H') {
+                        for (let k = 0; k < args.length; k += 1) {
+                            cur.x = isRelative ? cur.x + args[k] : args[k];
+                            currentPathPts.push({ x: fx(cur.x), y: fy(cur.y) });
+                        }
+                    } else if (type === 'V') {
+                        for (let k = 0; k < args.length; k += 1) {
+                            cur.y = isRelative ? cur.y + args[k] : args[k];
+                            currentPathPts.push({ x: fx(cur.x), y: fy(cur.y) });
+                        }
+                    } else if (type === 'Z') {
+                        if (startPt) {
+                            cur = { ...startPt };
+                            currentPathPts.push({ x: fx(cur.x), y: fy(cur.y) });
+                        }
+                        if (currentPathPts.length > 0) {
+                            let shape;
+                            if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
+                            else shape = makePencil(currentPathPts, strokeWidth);
+                            shape.method = method;
+                            this.shapes.push(shape);
+                            currentPathPts = [];
+                        }
+                    } else if (type === 'C' || type === 'S' || type === 'Q' || type === 'T') {
+                        // Approximate curves by linking endpoints for canvas preview
+                        const ptsPerCmd = (type === 'C') ? 6 : ((type === 'S' || type === 'Q') ? 4 : 2);
+                        for (let k = 0; k < args.length; k += ptsPerCmd) {
+                            const endIdx = k + ptsPerCmd - 2;
+                            if (endIdx < args.length) {
+                                const pt = getPt(endIdx);
+                                cur = pt;
+                                currentPathPts.push({ x: fx(pt.x), y: fy(pt.y) });
+                            }
+                        }
                     }
+                });
+                
+                if (currentPathPts.length > 0) {
+                    let shape;
+                    if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
+                    else shape = makePencil(currentPathPts, strokeWidth);
+                    shape.method = method;
+                    this.shapes.push(shape);
                 }
             });
+
+            const rects = doc.querySelectorAll('rect');
+            rects.forEach(r => {
+                const x = parseFloat(r.getAttribute('x')||0);
+                const y = parseFloat(r.getAttribute('y')||0);
+                const w = parseFloat(r.getAttribute('width')||0);
+                const h = parseFloat(r.getAttribute('height')||0);
+                this.shapes.push(makeRect(fx(x + w), fy(y+h), w * scale, h * scale, 1.5));
+            });
+
+            const circles = doc.querySelectorAll('circle');
+            circles.forEach(c => {
+                const cx = parseFloat(c.getAttribute('cx')||0);
+                const cy = parseFloat(c.getAttribute('cy')||0);
+                const r = parseFloat(c.getAttribute('r')||0);
+                this.shapes.push(makeCircle(fx(cx), fy(cy), r * scale, r * scale, 1.5));
+            });
             
-            if (currentPathPts.length > 0) {
-                let shape;
-                if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
-                else shape = makePencil(currentPathPts, strokeWidth);
-                shape.method = method;
-                this.shapes.push(shape);
-            }
-        });
+            const ellipses = doc.querySelectorAll('ellipse');
+            ellipses.forEach(c => {
+                const cx = parseFloat(c.getAttribute('cx')||0);
+                const cy = parseFloat(c.getAttribute('cy')||0);
+                const rx = parseFloat(c.getAttribute('rx')||0);
+                const ry = parseFloat(c.getAttribute('ry')||0);
+                this.shapes.push(makeCircle(fx(cx), fy(cy), rx * scale, ry * scale, 1.5));
+            });
 
-        const rects = doc.querySelectorAll('rect');
-        rects.forEach(r => {
-            const x = parseFloat(r.getAttribute('x')||0);
-            const y = parseFloat(r.getAttribute('y')||0);
-            const w = parseFloat(r.getAttribute('width')||0);
-            const h = parseFloat(r.getAttribute('height')||0);
-            this.shapes.push(makeRect(fx(x + w), fy(y+h), w * scale, h * scale, 1.5));
-        });
+            const lines = doc.querySelectorAll('line');
+            lines.forEach(l => {
+                const x1 = parseFloat(l.getAttribute('x1')||0);
+                const y1 = parseFloat(l.getAttribute('y1')||0);
+                const x2 = parseFloat(l.getAttribute('x2')||0);
+                const y2 = parseFloat(l.getAttribute('y2')||0);
+                this.shapes.push(makeLine(fx(x1), fy(y1), fx(x2), fy(y2), 1.5));
+            });
 
-        const circles = doc.querySelectorAll('circle');
-        circles.forEach(c => {
-            const cx = parseFloat(c.getAttribute('cx')||0);
-            const cy = parseFloat(c.getAttribute('cy')||0);
-            const r = parseFloat(c.getAttribute('r')||0);
-            this.shapes.push(makeCircle(fx(cx), fy(cy), r * scale, r * scale, 1.5));
-        });
-        
-        const ellipses = doc.querySelectorAll('ellipse');
-        ellipses.forEach(c => {
-            const cx = parseFloat(c.getAttribute('cx')||0);
-            const cy = parseFloat(c.getAttribute('cy')||0);
-            const rx = parseFloat(c.getAttribute('rx')||0);
-            const ry = parseFloat(c.getAttribute('ry')||0);
-            this.shapes.push(makeCircle(fx(cx), fy(cy), rx * scale, ry * scale, 1.5));
-        });
+            const polylines = doc.querySelectorAll('polyline, polygon');
+            polylines.forEach(p => {
+                const ptsStr = p.getAttribute('points') || '';
+                const coords = ptsStr.trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
+                const points = [];
+                for(let i=0; i<coords.length; i+=2) {
+                    if (i+1 < coords.length) points.push({x: fx(coords[i]), y: fy(coords[i+1])});
+                }
+                if (p.tagName.toLowerCase() === 'polygon' && points.length > 0) {
+                    points.push({...points[0]});
+                }
+                if (points.length === 2) {
+                    this.shapes.push(makeLine(points[0].x, points[0].y, points[1].x, points[1].y, 1.5));
+                } else if (points.length > 2) {
+                    this.shapes.push(makePencil(points, 1.5));
+                }
+            });
 
-        const lines = doc.querySelectorAll('line');
-        lines.forEach(l => {
-            const x1 = parseFloat(l.getAttribute('x1')||0);
-            const y1 = parseFloat(l.getAttribute('y1')||0);
-            const x2 = parseFloat(l.getAttribute('x2')||0);
-            const y2 = parseFloat(l.getAttribute('y2')||0);
-            this.shapes.push(makeLine(fx(x1), fy(y1), fx(x2), fy(y2), 1.5));
-        });
-        
-        const polylines = doc.querySelectorAll('polyline, polygon');
-        polylines.forEach(p => {
-            const ptsStr = p.getAttribute('points') || '';
-            const coords = ptsStr.trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
-            const points = [];
-            for(let i=0; i<coords.length; i+=2) {
-                if (i+1 < coords.length) points.push({x: fx(coords[i]), y: fy(coords[i+1])});
-            }
-            if (p.tagName.toLowerCase() === 'polygon' && points.length > 0) {
-                points.push({...points[0]});
-            }
-            if (points.length === 2) {
-                this.shapes.push(makeLine(points[0].x, points[0].y, points[1].x, points[1].y, 1.5));
-            } else if (points.length > 2) {
-                this.shapes.push(makePencil(points, 1.5));
-            }
-        });
-
-        this.draw();
-        this._emitChange();
+            this.draw();
+            this._emitChange();
+        } catch (err) {
+            console.warn("importSVG parsing error:", err);
+        }
     }
 
     get hasShapes() { return this.shapes.length > 0; }
 
     // ── Internal event bus ────────────────────────────────────────────────────
 
-    _emitChange() {
-        this.canvas.dispatchEvent(new CustomEvent('editor:changed', { bubbles: true }));
-    }
+
 
     skeletonize() {
         if (!window.TraceSkeleton) {

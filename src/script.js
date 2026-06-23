@@ -36,7 +36,7 @@ import { MachineConnection } from './Connection.js';
 import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
-import { CanvasEditor } from './CanvasEditor.js?v=4';
+import { CanvasEditor } from './CanvasEditor.js?v=5';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -324,7 +324,7 @@ function updateViewer() {
         canvas.width  = 960;
         canvas.height = 640;
     }
-    renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, state.simulatedPathIndex, state.binaryPackets);
+    renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, state.simulatedPathIndex, state.binaryPackets, null, { x: jogState.posX, y: jogState.posY });
 }
 
 /**
@@ -347,10 +347,28 @@ function updatePositionFromPacket(packet) {
     jogState.posZ += -dz / zStepsPerMM; // negative steps mean Up, so we negate
     jogState.posA += da / aStepsPerDeg;
 
-    document.getElementById('jogPosX').textContent = jogState.posX.toFixed(2);
-    document.getElementById('jogPosY').textContent = jogState.posY.toFixed(2);
-    document.getElementById('jogPosZ').textContent = jogState.posZ.toFixed(2);
-    document.getElementById('jogPosA').textContent = jogState.posA.toFixed(2);
+    const posXText = jogState.posX.toFixed(2);
+    const posYText = jogState.posY.toFixed(2);
+    const posZText = jogState.posZ.toFixed(2);
+    const posAText = jogState.posA.toFixed(2);
+
+    const xEl = document.getElementById('jogPosX');
+    const yEl = document.getElementById('jogPosY');
+    const zEl = document.getElementById('jogPosZ');
+    const aEl = document.getElementById('jogPosA');
+    if (xEl) xEl.textContent = posXText;
+    if (yEl) yEl.textContent = posYText;
+    if (zEl) zEl.textContent = posZText;
+    if (aEl) aEl.textContent = posAText;
+
+    const hudX = document.getElementById('hudPosX');
+    const hudY = document.getElementById('hudPosY');
+    const hudZ = document.getElementById('hudPosZ');
+    const hudA = document.getElementById('hudPosA');
+    if (hudX) hudX.textContent = posXText;
+    if (hudY) hudY.textContent = posYText;
+    if (hudZ) hudZ.textContent = posZText;
+    if (hudA) hudA.textContent = posAText;
 
     // V2: Sync Setup coordinates and bed graphic visualizer
     if (typeof updateSetupCoordinates === 'function') {
@@ -934,41 +952,68 @@ if (parkPanelHeader && parkPanelBody) {
     });
 }
 
-// Gantry Parking Control UI Bindings
-const parkXInput = document.getElementById('parkXInput');
-const parkYInput = document.getElementById('parkYInput');
+// Move To & Park UI Bindings
+const moveToX = document.getElementById('moveToX');
+const moveToY = document.getElementById('moveToY');
+const moveToZ = document.getElementById('moveToZ');
+const moveToA = document.getElementById('moveToA');
+const btnMoveModeAbs = document.getElementById('btnMoveModeAbs');
+const btnMoveModeRel = document.getElementById('btnMoveModeRel');
+const btnMoveToGo = document.getElementById('btnMoveToGo');
+
+let isMoveModeAbsolute = true;
+
+if (btnMoveModeAbs && btnMoveModeRel) {
+    btnMoveModeAbs.addEventListener('click', () => {
+        isMoveModeAbsolute = true;
+        btnMoveModeAbs.classList.add('active');
+        btnMoveModeRel.classList.remove('active');
+    });
+    btnMoveModeRel.addEventListener('click', () => {
+        isMoveModeAbsolute = false;
+        btnMoveModeRel.classList.add('active');
+        btnMoveModeAbs.classList.remove('active');
+    });
+}
+
+if (btnMoveToGo) {
+    btnMoveToGo.addEventListener('click', () => {
+        const mx = parseFloat(moveToX.value) || 0;
+        const my = parseFloat(moveToY.value) || 0;
+        const mz = parseFloat(moveToZ.value) || 0;
+        const ma = parseFloat(moveToA.value) || 0;
+
+        let dx = 0, dy = 0, dz = 0, da = 0;
+
+        if (isMoveModeAbsolute) {
+            dx = mx - jogState.posX;
+            dy = my - jogState.posY;
+            dz = mz - jogState.posZ;
+            da = ma - jogState.posA;
+        } else {
+            dx = mx;
+            dy = my;
+            dz = mz;
+            da = ma;
+        }
+
+        sendJog(dx, dy, dz, da);
+    });
+}
+
 const parkModeCheckbox = document.getElementById('parkModeCheckbox');
 const parkStatusText = document.getElementById('parkStatusText');
 const btnSetParkCurrent = document.getElementById('btnSetParkCurrent');
 const btnParkNow = document.getElementById('btnParkNow');
 
-if (parkXInput && parkYInput && parkModeCheckbox) {
-    // Initialize fields with values from state
-    parkXInput.value = state.parkX;
-    parkYInput.value = state.parkY;
+if (parkModeCheckbox) {
     parkModeCheckbox.checked = state.parkEnabled;
-    if (parkStatusText) {
-        parkStatusText.textContent = state.parkEnabled ? 'ON' : 'OFF';
-    }
-
-    parkXInput.addEventListener('change', () => {
-        state.parkX = parseFloat(parkXInput.value) || 0;
-        localStorage.setItem('parkX', state.parkX);
-        log(`Park position X updated to ${state.parkX} mm`, 'info');
-    });
-
-    parkYInput.addEventListener('change', () => {
-        state.parkY = parseFloat(parkYInput.value) || 0;
-        localStorage.setItem('parkY', state.parkY);
-        log(`Park position Y updated to ${state.parkY} mm`, 'info');
-    });
+    if (parkStatusText) parkStatusText.textContent = state.parkEnabled ? 'ON' : 'OFF';
 
     parkModeCheckbox.addEventListener('change', () => {
         state.parkEnabled = parkModeCheckbox.checked;
         localStorage.setItem('parkEnabled', state.parkEnabled);
-        if (parkStatusText) {
-            parkStatusText.textContent = state.parkEnabled ? 'ON' : 'OFF';
-        }
+        if (parkStatusText) parkStatusText.textContent = state.parkEnabled ? 'ON' : 'OFF';
         log(`Park Mode ${state.parkEnabled ? 'Enabled' : 'Disabled'}`, 'success');
     });
 }
@@ -977,14 +1022,16 @@ if (btnSetParkCurrent) {
     btnSetParkCurrent.addEventListener('click', () => {
         state.parkX = Math.round(jogState.posX * 100) / 100;
         state.parkY = Math.round(jogState.posY * 100) / 100;
-
-        if (parkXInput) parkXInput.value = state.parkX;
-        if (parkYInput) parkYInput.value = state.parkY;
+        
+        if (moveToX) moveToX.value = state.parkX;
+        if (moveToY) moveToY.value = state.parkY;
+        if (moveToZ) moveToZ.value = Math.round(jogState.posZ * 100) / 100;
+        if (moveToA) moveToA.value = Math.round(jogState.posA * 100) / 100;
 
         localStorage.setItem('parkX', state.parkX);
         localStorage.setItem('parkY', state.parkY);
 
-        log(`Set park position to current coordinates: X=${state.parkX}, Y=${state.parkY}`, 'success');
+        log(`Pulled current coordinates for Move/Park. (Park X=${state.parkX}, Y=${state.parkY})`, 'success');
     });
 }
 
@@ -993,6 +1040,103 @@ if (btnParkNow) {
         parkNow();
     });
 }
+
+// Macros UI Bindings
+const macrosGrid = document.getElementById('macrosGrid');
+const macroModal = document.getElementById('macroModal');
+const btnCloseMacroModal = document.getElementById('btnCloseMacroModal');
+const btnSaveMacro = document.getElementById('btnSaveMacro');
+const macroNameInput = document.getElementById('macroNameInput');
+const macroCommandInput = document.getElementById('macroCommandInput');
+
+let customMacros = JSON.parse(localStorage.getItem('customMacros') || '[]');
+
+function renderMacros() {
+    if (!macrosGrid) return;
+    
+    macrosGrid.innerHTML = '';
+    
+    // Default Macros
+    const defaultMacros = [
+        { name: 'Ping All', cmd: 'pingall', isPrompt: false },
+        { name: 'Ping ID', cmd: 'ping', isPrompt: true }
+    ];
+
+    const allMacros = [...defaultMacros, ...customMacros];
+
+    allMacros.forEach((macro, index) => {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-outline macro-btn';
+        btn.textContent = macro.name;
+        
+        btn.addEventListener('click', () => {
+            let finalCmd = macro.cmd;
+            if (macro.isPrompt) {
+                const arg = prompt(`Enter argument for ${macro.name}:`);
+                if (arg === null || arg === '') return;
+                finalCmd = `${macro.cmd} ${arg}`;
+            }
+            
+            log(`Macro Executed: ${macro.name}`, 'info');
+            if (connection.connected) {
+                connection.sendLine(finalCmd);
+            } else {
+                log(`Cannot execute ${macro.name}, not connected.`, 'error');
+            }
+        });
+
+        // Add right-click to delete custom macros
+        if (index >= defaultMacros.length) {
+            btn.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                if (confirm(`Delete custom macro "${macro.name}"?`)) {
+                    customMacros.splice(index - defaultMacros.length, 1);
+                    localStorage.setItem('customMacros', JSON.stringify(customMacros));
+                    renderMacros();
+                }
+            });
+            btn.title = "Right-click to delete";
+        }
+
+        macrosGrid.appendChild(btn);
+    });
+
+    // Add Button
+    const btnAdd = document.createElement('button');
+    btnAdd.className = 'btn btn-outline macro-btn';
+    btnAdd.style.borderStyle = 'dashed';
+    btnAdd.style.color = 'var(--text-muted)';
+    btnAdd.textContent = '+ Add';
+    btnAdd.addEventListener('click', () => {
+        macroNameInput.value = '';
+        macroCommandInput.value = '';
+        macroModal.classList.remove('hidden');
+    });
+    macrosGrid.appendChild(btnAdd);
+}
+
+if (macroModal && btnCloseMacroModal && btnSaveMacro) {
+    btnCloseMacroModal.addEventListener('click', () => {
+        macroModal.classList.add('hidden');
+    });
+
+    btnSaveMacro.addEventListener('click', () => {
+        const name = macroNameInput.value.trim();
+        const cmd = macroCommandInput.value.trim();
+        if (name && cmd) {
+            customMacros.push({ name, cmd, isPrompt: false });
+            localStorage.setItem('customMacros', JSON.stringify(customMacros));
+            macroModal.classList.add('hidden');
+            renderMacros();
+            log(`Saved custom macro: ${name}`, 'success');
+        } else {
+            alert('Please enter both a name and a command.');
+        }
+    });
+}
+
+// Initial render
+renderMacros();
 
 // 1. Start/Stop Button Logic
 btnStart.addEventListener('click', () => {
@@ -1166,26 +1310,23 @@ cmdInput.addEventListener('keydown', (e) => {
     }
 });
 
-// 3. Reconnect on Badge Click or Connect Button
-// If user clicks the "Disconnected" red badge, try to reconnect.
+// 3. Reconnect/Disconnect on Status Badge Click (Toggles connection)
 document.getElementById('statusBadge').addEventListener('click', () => {
     state.suctionLastSignature = null;
-    connection.connect();
-});
-document.getElementById('btnConnect').addEventListener('click', () => {
     if (connection.connected) {
-        state.suctionLastSignature = null;
         connection.disconnect();
     } else {
-        state.suctionLastSignature = null;
         connection.connect();
     }
 });
 
 // 4. Sync Editor changes
-// When user types in the editor, update our global variable so the preview knows.
+// When user types in the Raw SVG editor, update our global variable and synchronise to the canvas in real-time
 editor.addEventListener('input', () => {
     state.gcode = editor.value;
+    if (canvasEditor) {
+        canvasEditor.importSVG(editor.value);
+    }
     state.suctionAutoActiveZones = calculateActiveZones(state.gcode, state.binaryPackets);
     updateSuctionUI();
 });
@@ -1205,6 +1346,29 @@ function onGCodeReady(result, stepsPerMM = 1.0) {
     state.stepsPerMM = stepsPerMM;
     editor.value = state.gcode + (state.binaryPackets.length > 0
         ? `\n; [${state.binaryPackets.length} binary MicroSegment packets ready]` : '');
+    const setupArea = document.getElementById('setupInstructionsText');
+    if (setupArea) {
+        let instructions = [];
+        if (state.preamble && state.preamble.length > 0) {
+            instructions.push("; Preamble Commands");
+            instructions.push(...state.preamble);
+            instructions.push("");
+        }
+        if (state.binaryPackets && state.binaryPackets.length > 0) {
+            instructions.push("; Motion Microsegments (mseg <dx> <dy> <dz> <da> <interval> <flags>)");
+            state.binaryPackets.forEach((pkt) => {
+                const view = new DataView(pkt.buffer, pkt.byteOffset, pkt.byteLength);
+                const dx = view.getInt32(1, true);
+                const dy = view.getInt32(5, true);
+                const dz = view.getInt32(9, true);
+                const da = view.getInt32(13, true);
+                const interval = view.getUint32(17, true);
+                const flags = view.getUint8(21);
+                instructions.push(`mseg ${dx} ${dy} ${dz} ${da} ${interval} ${flags}`);
+            });
+        }
+        setupArea.value = instructions.join('\n');
+    }
     state.wasInterrupted = false;
     state.lastSentCmd = null;
 
@@ -1230,6 +1394,12 @@ function onGCodeReady(result, stepsPerMM = 1.0) {
     if (activityFileDot) {
         activityFileDot.className = 'status-circle-indicator loaded';
     }
+
+    // Automatically transition to the Prepare tab
+    switchMode('setup');
+    if (window.switchSetupTab) {
+        window.switchSetupTab('image');
+    }
 }
 
 // --- Initialization ---
@@ -1246,7 +1416,19 @@ let canvasEditor = null;
 
 if (drawCanvasEl) {
     canvasEditor = new CanvasEditor(drawCanvasEl, drawViewState);
-    canvasEditor.onChange = updatePropertiesInspector;
+    window.canvasEditor = canvasEditor;
+    canvasEditor.onChange = () => {
+        updatePropertiesInspector();
+        if (editor) {
+            editor.value = canvasEditor.exportAsSVG();
+            state.gcode = editor.value;
+        }
+    };
+    canvasEditor.onToolChange = (toolName) => {
+        document.querySelectorAll('.draw-tool-btn').forEach(b => b.classList.remove('active'));
+        const btn = document.querySelector(`.draw-tool-btn[data-tool="${toolName}"]`);
+        if (btn) btn.classList.add('active');
+    };
 }
 
 // Recompute viewport metrics (mirrors the Viewer math)
@@ -1406,21 +1588,178 @@ document.getElementById('btnDrawUngroup')?.addEventListener('click', () => {
     if (canvasEditor) canvasEditor.ungroupNodes();
 });
 
-// Send to Cutter – export drawn shapes as SVG and push through handleFile
-document.getElementById('btnDrawSend')?.addEventListener('click', () => {
-    if (!canvasEditor || !canvasEditor.hasShapes) {
-        log('No drawn shapes to send.', 'error');
-        return;
+// Send to Cutter – exports canvas drawing (if Draw is active) or reads Raw SVG text,
+// then processes the G-Code trajectory and switches to Run workspace
+function sendToCutter() {
+    const activeTab = document.querySelector('.sub-tabs .tab.active');
+    const isDrawActive = activeTab ? activeTab.innerText.trim().toLowerCase().includes('draw') : true;
+
+    let svgText = '';
+    if (isDrawActive) {
+        if (!canvasEditor || !canvasEditor.hasShapes) {
+            log('No drawn shapes to send.', 'error');
+            return;
+        }
+        svgText = canvasEditor.exportAsSVG();
+    } else {
+        svgText = document.getElementById('gcodeEditor').value;
+        if (!svgText.trim()) {
+            log('No raw SVG code to send.', 'error');
+            return;
+        }
     }
-    const svgText = canvasEditor.exportAsSVG();
+
     const virtualFile = new File([svgText], 'canvas_drawing.svg', { type: 'image/svg+xml' });
-    log('Converting drawn shapes to trajectory...', 'info');
+    log('Converting SVG to trajectory...', 'info');
     handleFile(virtualFile, onGCodeReady, window.switchTab);
+}
+
+document.getElementById('btnSendToCutter')?.addEventListener('click', sendToCutter);
+document.getElementById('btnDrawSend')?.addEventListener('click', sendToCutter);
+
+// Import SVG to CanvasEditor triggers
+const triggerDrawImport = () => {
+    document.getElementById('drawFileInput')?.click();
+};
+document.getElementById('btnDrawImport')?.addEventListener('click', triggerDrawImport);
+document.getElementById('dtImport')?.addEventListener('click', triggerDrawImport);
+
+// Vision Integration (Capture image with phone / PeerJS WebRTC)
+let peer = null;
+let peerConnection = null;
+
+const visionQrModal = document.getElementById('visionQrModal');
+
+function closeVisionModal() {
+    if (!visionQrModal) return;
+    visionQrModal.classList.remove('visible');
+    setTimeout(() => visionQrModal.classList.add('hidden'), 250);
+}
+
+document.getElementById('btnCloseVisionModal')?.addEventListener('click', closeVisionModal);
+visionQrModal?.addEventListener('click', (e) => {
+    if (e.target === visionQrModal) closeVisionModal();
 });
 
-// Import SVG to CanvasEditor
-document.getElementById('btnDrawImport')?.addEventListener('click', () => {
-    document.getElementById('drawFileInput')?.click();
+function initPeerConnection() {
+    const statusText = document.getElementById('visionStatusText');
+    const qrContainer = document.getElementById('visionQrContainer');
+    
+    if (!statusText || !qrContainer) return;
+    
+    statusText.textContent = "Connecting to PeerJS signalling...";
+    statusText.style.color = "#fbbf24"; // warning orange/yellow
+    
+    // Initialize PeerJS
+    try {
+        peer = new Peer({
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun.cloudflare.com:3478' }
+                ]
+            }
+        });
+        
+        peer.on('open', (id) => {
+            statusText.textContent = "Waiting for phone connection...";
+            statusText.style.color = "#60a5fa"; // blue info
+            // Generate QR Code URL
+            const mobileUrl = `https://joginfrancis.github.io/photoshare/mobile.html?id=${id}`;
+            const encodedUrl = encodeURIComponent(mobileUrl);
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=0&data=${encodedUrl}`;
+            
+            qrContainer.innerHTML = `<img src="${qrUrl}" alt="Scan QR Code" style="width:180px; height:180px; display:block; border-radius: 4px;">`;
+        });
+        
+        peer.on('connection', (conn) => {
+            peerConnection = conn;
+            statusText.textContent = "Phone connected! Ready to receive photo.";
+            statusText.style.color = "#10b981"; // success green
+            
+            let fileMeta = null;
+            let chunks = [];
+            
+            conn.on('data', (data) => {
+                if (typeof data === 'string') {
+                    try {
+                        const msg = JSON.parse(data);
+                        if (msg.type === 'meta') {
+                            fileMeta = msg;
+                            chunks = [];
+                            statusText.textContent = `Receiving photo: ${msg.name}...`;
+                            statusText.style.color = "#3b82f6"; // primary accent
+                        } else if (msg.type === 'done') {
+                            statusText.textContent = "Photo received! Processing...";
+                            statusText.style.color = "#10b981"; // success green
+                            // Reassemble chunks
+                            const blob = new Blob(chunks, { type: fileMeta.mime || 'image/jpeg' });
+                            
+                            // Inject image to CanvasEditor
+                            const img = new Image();
+                            img.onload = () => {
+                                if (canvasEditor) {
+                                    const aspect = img.width / img.height;
+                                    const w = 297; // A4 landscape width in mm
+                                    const h = w / aspect;
+                                    const x = (state.bedWidth - w) / 2;
+                                    const y = (state.bedHeight - h) / 2;
+                                    
+                                    canvasEditor.addImage(img, x, y, w, h);
+                                    log('Photo received and injected into canvas background.', 'success');
+                                    closeVisionModal();
+                                }
+                            };
+                            img.src = URL.createObjectURL(blob);
+                        }
+                    } catch (e) {
+                        console.error('Error handling string connection data:', e);
+                    }
+                } else {
+                    // Binary chunk
+                    chunks.push(data);
+                    const receivedBytes = chunks.reduce((acc, chunk) => acc + chunk.byteLength, 0);
+                    if (fileMeta && fileMeta.size) {
+                        const pct = Math.round((receivedBytes / fileMeta.size) * 100);
+                        statusText.textContent = `Receiving: ${pct}%`;
+                    } else {
+                        statusText.textContent = `Receiving chunk: ${(receivedBytes / 1024).toFixed(1)} KB`;
+                    }
+                }
+            });
+            
+            conn.on('close', () => {
+                statusText.textContent = "Phone disconnected.";
+                statusText.style.color = "#ef4444"; // danger red
+            });
+        });
+        
+        peer.on('error', (err) => {
+            console.error("PeerJS error:", err);
+            statusText.textContent = `Error: ${err.type || 'Connection failed'}`;
+            statusText.style.color = "#ef4444"; // danger red
+        });
+    } catch (e) {
+        console.error("Failed to initialize PeerJS:", e);
+        statusText.textContent = "Error: PeerJS failed to load.";
+        statusText.style.color = "#ef4444";
+    }
+}
+
+document.getElementById('dtVision')?.addEventListener('click', () => {
+    if (!visionQrModal) return;
+    visionQrModal.classList.remove('hidden');
+    setTimeout(() => visionQrModal.classList.add('visible'), 10);
+    
+    if (!peer) {
+        initPeerConnection();
+    }
+});
+
+// Load G-Code / Trajectory trigger
+document.getElementById('dtLoadGCode')?.addEventListener('click', () => {
+    document.getElementById('fileInput')?.click();
 });
 
 document.getElementById('drawFileInput')?.addEventListener('change', async (e) => {
@@ -1844,7 +2183,10 @@ function getAxisSteps(inputId, fallback) {
 
 const retriggerConversion = () => {
     if (state.gcode && !document.getElementById('canvasContainer').classList.contains('hidden')) {
-        renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, -1, state.binaryPackets);
+        renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, -1, state.binaryPackets, null, { x: jogState.posX, y: jogState.posY });
+    }
+    if (state.gcode) {
+        renderGCode(state.gcode, 'setupGcodeCanvas', 'setupGcodeCanvasContainer', state.stepsPerMM, -1, state.binaryPackets, state.suctionZones, { x: jogState.posX, y: jogState.posY });
     }
     if (state.currentFile && state.currentFile.name.toLowerCase().endsWith('.svg')) {
         log('Re-calculating trajectory with new settings...', 'info');
@@ -1898,8 +2240,34 @@ if (simModeCheckbox) {
 // Modal Logic
 btnSettings.addEventListener('click', () => {
     configModal.classList.remove('hidden');
+
+    // Reset active config tab to default (bed)
+    document.querySelectorAll('.config-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.configTab === 'bed'));
+    const bedSec = document.getElementById('cfgSectionBed');
+    const motSec = document.getElementById('cfgSectionMotion');
+    const matSec = document.getElementById('cfgSectionMatrix');
+    if (bedSec) bedSec.classList.remove('hidden');
+    if (motSec) motSec.classList.add('hidden');
+    if (matSec) matSec.classList.add('hidden');
+
     // small delay to allow display:block to apply before animating opacity
     setTimeout(() => configModal.classList.add('visible'), 10);
+});
+
+// Config Modal Sub-tabs logic
+document.querySelectorAll('.config-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.config-tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        const targetTab = btn.dataset.configTab;
+        const bedSec = document.getElementById('cfgSectionBed');
+        const motSec = document.getElementById('cfgSectionMotion');
+        const matSec = document.getElementById('cfgSectionMatrix');
+        if (bedSec) bedSec.classList.toggle('hidden', targetTab !== 'bed');
+        if (motSec) motSec.classList.toggle('hidden', targetTab !== 'motion');
+        if (matSec) matSec.classList.toggle('hidden', targetTab !== 'matrix');
+    });
 });
 
 const closeModal = () => {
@@ -1950,41 +2318,29 @@ dropZone.addEventListener('drop', (e) => {
  * This is NOT the machine's actual encoder position — it's a dead-reckoning counter.
  */
 const jogState = {
-    step: 0.1,        // Current step size in mm
+    stepLinear: 0.1,    // Current linear step size in mm
+    stepRotary: 5,      // Current rotary step size in degrees
     posX: 0,
     posY: 0,
     posZ: 0,
     posA: 0,
 };
 
-const jogModal = document.getElementById('jogModal');
-const btnJog = document.getElementById('btnJog');
-
-/** Open / close helpers (floating panel style) */
-function openJogModal() {
-    if (jogModal.classList.contains('hidden')) {
-        jogModal.classList.remove('hidden');
-        // Bind keyboard jogging while panel is open
-        window.addEventListener('keydown', handleJogKey);
-    } else {
-        closeJogModal();
-    }
-}
-
-function closeJogModal() {
-    jogModal.classList.add('hidden');
-    window.removeEventListener('keydown', handleJogKey);
-}
-
-btnJog.addEventListener('click', openJogModal);
-document.getElementById('btnCloseJog').addEventListener('click', closeJogModal);
+// Keyboard jogging is bound dynamically inside switchMode()
 
 /** Step-size pill buttons */
-document.querySelectorAll('.jog-step-btn').forEach(btn => {
+document.querySelectorAll('#linearStepBtns .jog-step-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-        document.querySelectorAll('.jog-step-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('#linearStepBtns .jog-step-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        jogState.step = parseFloat(btn.dataset.step);
+        jogState.stepLinear = parseFloat(btn.dataset.step);
+    });
+});
+document.querySelectorAll('#rotaryStepBtns .jog-step-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('#rotaryStepBtns .jog-step-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        jogState.stepRotary = parseFloat(btn.dataset.step);
     });
 });
 
@@ -2056,14 +2412,14 @@ function sendJog(dx, dy, dz, da = 0) {
 }
 
 // D-pad and Z buttons
-document.getElementById('jogXPlus').addEventListener('click', () => sendJog(jogState.step, 0, 0, 0));
-document.getElementById('jogXMinus').addEventListener('click', () => sendJog(-jogState.step, 0, 0, 0));
-document.getElementById('jogYPlus').addEventListener('click', () => sendJog(0, jogState.step, 0, 0));
-document.getElementById('jogYMinus').addEventListener('click', () => sendJog(0, -jogState.step, 0, 0));
-document.getElementById('jogZPlus').addEventListener('click', () => sendJog(0, 0, jogState.step, 0));
-document.getElementById('jogZMinus').addEventListener('click', () => sendJog(0, 0, -jogState.step, 0));
-document.getElementById('jogAPlus').addEventListener('click', () => sendJog(0, 0, 0, jogState.step));
-document.getElementById('jogAMinus').addEventListener('click', () => sendJog(0, 0, 0, -jogState.step));
+document.getElementById('jogXPlus').addEventListener('click', () => sendJog(jogState.stepLinear, 0, 0, 0));
+document.getElementById('jogXMinus').addEventListener('click', () => sendJog(-jogState.stepLinear, 0, 0, 0));
+document.getElementById('jogYPlus').addEventListener('click', () => sendJog(0, jogState.stepLinear, 0, 0));
+document.getElementById('jogYMinus').addEventListener('click', () => sendJog(0, -jogState.stepLinear, 0, 0));
+document.getElementById('jogZPlus').addEventListener('click', () => sendJog(0, 0, jogState.stepLinear, 0));
+document.getElementById('jogZMinus').addEventListener('click', () => sendJog(0, 0, -jogState.stepLinear, 0));
+document.getElementById('jogAPlus').addEventListener('click', () => sendJog(0, 0, 0, jogState.stepRotary));
+document.getElementById('jogAMinus').addEventListener('click', () => sendJog(0, 0, 0, -jogState.stepRotary));
 
 /**
  * GO TO ZERO ("Home")
@@ -2134,6 +2490,18 @@ document.getElementById('jogResetPos').addEventListener('click', () => {
     document.getElementById('jogPosA').textContent = '0.00';
 });
 
+// Set Origin — declare current head position as machine zero (no movement)
+document.getElementById('btnSetOrigin')?.addEventListener('click', () => {
+    const isSimMode = document.getElementById('simModeCheckbox')?.checked;
+    if (connection.connected) connection.send('setorigin');
+    jogState.posX = 0; jogState.posY = 0; jogState.posZ = 0; jogState.posA = 0;
+    document.getElementById('jogPosX').textContent = '0.00';
+    document.getElementById('jogPosY').textContent = '0.00';
+    document.getElementById('jogPosZ').textContent = '0.00';
+    document.getElementById('jogPosA').textContent = '0.00';
+    log(isSimMode && !connection.connected ? 'Origin set (simulation).' : 'Origin established at current position.', 'success');
+});
+
 /**
  * KEYBOARD JOG HANDLER
  * Arrow keys → X/Y, PageUp/PageDown → Z, Home → zero.
@@ -2190,15 +2558,9 @@ function calculateActiveZones(gcode, packets = []) {
         const cy = Math.max(0, Math.min(bedH - 0.001, y));
         const leftBasedX = Math.max(0, Math.min(bedW - 0.001, bedW - cx));
 
-        const col = Math.floor(leftBasedX / (bedW / 3)); // 0 to 2, left to right
-        const row = cy >= (bedH / 2) ? 0 : 1;           // Row 0 is Top, Row 1 is Bottom
-
-        let zoneNum = 1;
-        if (row === 0) {
-            zoneNum = col + 1; // 1, 2, 3
-        } else {
-            zoneNum = col + 4; // 4, 5, 6
-        }
+        const col = Math.max(0, Math.min(1, Math.floor(leftBasedX / (bedW / 2)))); // 0 or 1
+        const row = Math.max(0, Math.min(2, 2 - Math.floor(cy / (bedH / 3)))); // 0, 1, or 2
+        const zoneNum = row * 2 + col + 1; // 1 to 6
         active.add(zoneNum);
     };
 
@@ -2356,34 +2718,38 @@ function seedManualZonesFromAuto() {
  * Synchronizes the suction panel UI state with the current global controller state.
  */
 function updateSuctionUI() {
-    const autoBtn = document.getElementById('btnSuctionModeAuto');
-    const manualBtn = document.getElementById('btnSuctionModeManual');
-    const manualOnBtn = document.getElementById('btnSuctionManualOn');
-    const manualOffBtn = document.getElementById('btnSuctionManualOff');
+    const setupAutoBtn = document.getElementById('btnSetupSuctionAuto');
+    const setupManualBtn = document.getElementById('btnSetupSuctionManual');
+    const activeCountText = document.getElementById('setupVacuumActiveCount');
+
+    const makeOnBtn = document.getElementById('btnSuctionManualOn');
+    const makeOffBtn = document.getElementById('btnSuctionManualOff');
     const statusText = document.getElementById('suctionStatusText');
     const fanIcon = document.getElementById('suctionFanIcon');
     const cells = document.querySelectorAll('.suction-cell');
 
-    // Toggle active state classes for pills
-    if (autoBtn && manualBtn) {
-        if (state.suctionMode === 'auto') {
-            autoBtn.classList.add('active');
-            manualBtn.classList.remove('active');
-        } else {
-            autoBtn.classList.remove('active');
-            manualBtn.classList.add('active');
-        }
+    // Toggle active state classes for Prepare page floating panel
+    if (setupAutoBtn && setupManualBtn) {
+        setupAutoBtn.classList.toggle('active', state.suctionMode === 'auto');
+        setupManualBtn.classList.toggle('active', state.suctionMode === 'manual');
     }
 
-    if (manualOnBtn && manualOffBtn) {
-        manualOnBtn.classList.toggle('active', state.suctionControlEnabled);
-        manualOffBtn.classList.toggle('active', !state.suctionControlEnabled);
+    // Sync active count text
+    if (activeCountText) {
+        const count = getActiveSuctionZones().length;
+        activeCountText.textContent = `${count} Active`;
+    }
+
+    // Sync Make page buttons
+    if (makeOnBtn && makeOffBtn) {
+        makeOnBtn.classList.toggle('active', state.suctionControlEnabled);
+        makeOffBtn.classList.toggle('active', !state.suctionControlEnabled);
     }
 
     // Identify active zones based on current mode
     const activeList = getActiveSuctionZones();
 
-    // Sync individual cells in the 2x3 bed visualizer grid
+    // Sync individual cells in the suction bed grid (3x2 layout)
     cells.forEach(cell => {
         const zoneNum = parseInt(cell.dataset.zone);
         if (activeList.includes(zoneNum)) {
@@ -2392,6 +2758,11 @@ function updateSuctionUI() {
             cell.classList.remove('active');
         }
     });
+
+    // Redraw the setup bed canvas to reflect suction zone changes
+    if (typeof updateSetupBedVisualizer === 'function') {
+        updateSetupBedVisualizer();
+    }
 
     const isRunning = shouldRunSuction();
 
@@ -2413,6 +2784,21 @@ function updateSuctionUI() {
         } else {
             fanIcon.classList.remove('spinning');
         }
+    }
+
+    // Sync on-canvas vacuum toggle button
+    const canvasVacBtn = document.getElementById('btnCanvasVacuumToggle');
+    if (canvasVacBtn) {
+        canvasVacBtn.classList.toggle('on', !!state.suctionControlEnabled);
+        const lbl = canvasVacBtn.querySelector('strong');
+        if (lbl) lbl.textContent = state.suctionControlEnabled ? 'ON' : 'OFF';
+    }
+
+    // Redraw setup canvas if it's currently shown
+    const setupCanvas = document.getElementById('setupGcodeCanvas');
+    const setupPathImage = document.getElementById('setupPathImage');
+    if (setupCanvas && setupPathImage && !setupPathImage.classList.contains('hidden')) {
+        renderGCode(state.gcode, 'setupGcodeCanvas', 'setupGcodeCanvasContainer', state.stepsPerMM, -1, state.binaryPackets, state.suctionZones, { x: jogState.posX, y: jogState.posY });
     }
 }
 
@@ -2496,13 +2882,16 @@ function initSuctionBed() {
         });
     });
 
-    // V2: Sync setup bed graphics grid zones based on current active list
-    const activeList = getActiveSuctionZones();
-    const setupBedZones = document.querySelectorAll('.bed-graphics-zone');
-    setupBedZones.forEach(zone => {
-        const zoneNum = parseInt(zone.dataset.zone);
-        zone.classList.toggle('active', activeList.includes(zoneNum));
-    });
+    // On-canvas master vacuum toggle (Prepare tab)
+    const canvasVacBtn = document.getElementById('btnCanvasVacuumToggle');
+    if (canvasVacBtn) {
+        canvasVacBtn.addEventListener('click', () => {
+            state.suctionControlEnabled = !state.suctionControlEnabled;
+            updateSuctionUI();
+            sendSuctionCommands(true, state.suctionControlEnabled);
+            log(`Vacuum ${state.suctionControlEnabled ? 'enabled' : 'disabled'}.`, 'info');
+        });
+    }
 
     // Run the initial UI sync
     updateSuctionUI();
@@ -2555,64 +2944,23 @@ function makeElementDraggable(elmnt, header) {
     }
 }
 
-const jogModalEl = document.getElementById('jogModal');
-const jogHeaderEl = document.getElementById('jogPanelHeader');
-if (jogModalEl && jogHeaderEl) {
-    makeElementDraggable(jogModalEl, jogHeaderEl);
-}
+// makeElementDraggable on floating jog modal removed
 
 // 2. Mode Switching Logic (Prepare, Setup, Run)
 function updateSetupCoordinates() {
-    const xVal = document.getElementById('setupPosX');
-    const yVal = document.getElementById('setupPosY');
-    const zVal = document.getElementById('setupPosZ');
-    const aVal = document.getElementById('setupPosA');
-    if (xVal) xVal.textContent = jogState.posX.toFixed(2);
-    if (yVal) yVal.textContent = jogState.posY.toFixed(2);
-    if (zVal) zVal.textContent = jogState.posZ.toFixed(2);
-    if (aVal) aVal.textContent = jogState.posA.toFixed(2);
+    // Coordinates display is removed from Prepare tab sidebar
 }
 
 function updateSetupBedVisualizer() {
-    const cursor = document.getElementById('simToolheadCursor');
-    const grid = document.getElementById('setupBedGraphicsGrid');
-    if (!cursor || !grid) return;
-    
-    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 960;
-    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770;
-    
-    // Convert machine coordinate space (Origin Bottom-Right, +X left, +Y up)
-    // to CSS percentage relative to the screen (0% left, 0% top).
-    // X axis: left = (bedW - X) / bedW
-    // Y axis: top = (bedH - Y) / bedH
-    const leftPct = Math.max(0, Math.min(100, ((bedW - jogState.posX) / bedW) * 100));
-    const topPct = Math.max(0, Math.min(100, ((bedH - jogState.posY) / bedH) * 100));
-    
-    cursor.style.left = `${leftPct}%`;
-    cursor.style.top = `${topPct}%`;
-    
-    // Highlight zone based on position
-    const col = Math.floor((bedW - jogState.posX) / (bedW / 3)) + 1; // 1 (Left), 2 (Middle), 3 (Right)
-    const row = Math.floor((bedH - jogState.posY) / (bedH / 2)) + 1; // 1 (Top), 2 (Bottom)
-    
-    let activeZone = 0;
-    if (row === 1) { // Top Row
-        if (col === 1) activeZone = 1;
-        else if (col === 2) activeZone = 2;
-        else if (col === 3) activeZone = 3;
-    } else { // Bottom Row
-        if (col === 1) activeZone = 4;
-        else if (col === 2) activeZone = 5;
-        else if (col === 3) activeZone = 6;
-    }
-    
-    document.querySelectorAll('.bed-graphics-zone').forEach(z => {
-        const zoneNum = parseInt(z.dataset.zone);
-        z.classList.toggle('active', zoneNum === activeZone);
-    });
+    const setupCanvas = document.getElementById('setupGcodeCanvas');
+    if (!setupCanvas) return;
+    renderGCode(state.gcode, 'setupGcodeCanvas', 'setupGcodeCanvasContainer', state.stepsPerMM, -1, state.binaryPackets, state.suctionZones, { x: jogState.posX, y: jogState.posY });
 }
 
 function switchMode(mode) {
+    // Unbind keyboard jogging by default
+    window.removeEventListener('keydown', handleJogKey);
+
     document.querySelectorAll('.mode-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.mode === mode);
     });
@@ -2641,8 +2989,7 @@ function switchMode(mode) {
         if (activeTabBtn) {
             const tabText = activeTabBtn.textContent.toLowerCase();
             if (tabText.includes('draw')) window.switchTab('draw');
-            else if (tabText.includes('svg')) window.switchTab('svg-preview');
-            else if (tabText.includes('editor')) window.switchTab('editor');
+            else if (tabText.includes('svg') || tabText.includes('raw') || tabText.includes('editor')) window.switchTab('editor');
         } else {
             window.switchTab('draw');
         }
@@ -2663,8 +3010,12 @@ function switchMode(mode) {
         }
         
         setTimeout(updateViewer, 50);
+
+        // Bind keyboard jogging dynamically when in Make mode
+        window.addEventListener('keydown', handleJogKey);
     }
 }
+window.switchMode = switchMode;
 
 document.querySelectorAll('.mode-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -2672,24 +3023,117 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
     });
 });
 
+// Prepare page sub-tabs routing
+window.switchSetupTab = function(tabName) {
+    document.querySelectorAll('.setup-sub-tabs .tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.setup-view-panel').forEach(p => p.classList.add('hidden'));
 
-
-// 5. Visual Bed Interactive Grid Clicks
-document.querySelectorAll('.bed-graphics-zone').forEach(zone => {
-    zone.addEventListener('click', () => {
-        const zoneNum = parseInt(zone.dataset.zone);
-        if (isNaN(zoneNum) || zoneNum < 1 || zoneNum > 6) return;
-
-        if (state.suctionMode === 'auto') {
-            state.suctionMode = 'manual';
-            seedManualZonesFromAuto();
-            log('Suction Bed: Clicking visual bed zone switched system to Manual override.', 'info');
+    if (tabName === 'image') {
+        document.getElementById('tabSetupImage')?.classList.add('active');
+        document.getElementById('setupPathImage')?.classList.remove('hidden');
+        setTimeout(updateSetupBedVisualizer, 20);
+    } else {
+        document.getElementById('tabSetupInstructions')?.classList.add('active');
+        document.getElementById('setupPathInstructions')?.classList.remove('hidden');
+        // Update the textarea value with current G-code instructions
+        const area = document.getElementById('setupInstructionsText');
+        if (area) {
+            area.value = state.gcode + (state.binaryPackets.length > 0
+                ? `\n; [${state.binaryPackets.length} binary MicroSegment packets ready]` : '');
         }
+    }
+};
 
-        state.suctionZones[zoneNum - 1] = !state.suctionZones[zoneNum - 1];
-        updateSuctionUI();
-        sendSuctionCommands();
+// Clipboard copy listener for G-code instructions
+document.getElementById('btnCopySetupInstructions')?.addEventListener('click', () => {
+    const area = document.getElementById('setupInstructionsText');
+    if (area && area.value) {
+        navigator.clipboard.writeText(area.value)
+            .then(() => {
+                const btn = document.getElementById('btnCopySetupInstructions');
+                const origHtml = btn.innerHTML;
+                btn.innerHTML = 'Copied!';
+                setTimeout(() => btn.innerHTML = origHtml, 1500);
+            })
+            .catch(err => console.error('Could not copy G-code: ', err));
+    }
+});
+
+
+
+// 5. Visual Bed Interactive Clicks on Canvas
+function mapCanvasToMachine(mouseX, mouseY, canvas, bedW, bedH) {
+    const padding = 40;
+    const availableW = canvas.width - padding * 2;
+    const availableH = canvas.height - padding * 2;
+    const scale = Math.min(availableW / bedW, availableH / bedH);
+
+    const centerX = bedW / 2;
+    const centerY = bedH / 2;
+    const canvasCenterX = canvas.width / 2;
+    const canvasCenterY = canvas.height / 2;
+
+    const x = centerX - (mouseX - canvasCenterX) / scale;
+    const y = centerY - (mouseY - canvasCenterY) / scale;
+    return { x, y };
+}
+
+const setupCanvasEl = document.getElementById('setupGcodeCanvas');
+if (setupCanvasEl) {
+    setupCanvasEl.addEventListener('click', (e) => {
+        // Only allow clicking to toggle zones if tab is setupPathImage
+        const setupPathImage = document.getElementById('setupPathImage');
+        if (setupPathImage && setupPathImage.classList.contains('hidden')) return;
+
+        const rect = setupCanvasEl.getBoundingClientRect();
+        const mouseX = (e.clientX - rect.left) * (setupCanvasEl.width / rect.width);
+        const mouseY = (e.clientY - rect.top) * (setupCanvasEl.height / rect.height);
+
+        const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 960;
+        const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770;
+
+        const pos = mapCanvasToMachine(mouseX, mouseY, setupCanvasEl, bedW, bedH);
+        
+        if (pos.x >= 0 && pos.x <= bedW && pos.y >= 0 && pos.y <= bedH) {
+            // Find which zone is clicked (3 rows, 2 columns)
+            const r = 2 - Math.floor(pos.y / (bedH / 3));
+            const c = pos.x < bedW / 2 ? 1 : 0;
+            const zoneNum = r * 2 + c + 1;
+
+            if (zoneNum >= 1 && zoneNum <= 6) {
+                if (state.suctionMode === 'auto') {
+                    state.suctionMode = 'manual';
+                    seedManualZonesFromAuto();
+                    log('Suction Bed: Clicking visual bed zone switched system to Manual override.', 'info');
+                }
+
+                state.suctionZones[zoneNum - 1] = !state.suctionZones[zoneNum - 1];
+                updateSuctionUI();
+                sendSuctionCommands();
+            }
+        }
     });
+}
+
+// Wire up new Prepare tab floating vacuum controls
+document.getElementById('btnSetupSuctionAuto')?.addEventListener('click', () => {
+    state.suctionMode = 'auto';
+    updateSuctionUI();
+    sendSuctionCommands();
+});
+
+document.getElementById('btnSetupSuctionManual')?.addEventListener('click', () => {
+    state.suctionMode = 'manual';
+    seedManualZonesFromAuto();
+    updateSuctionUI();
+    sendSuctionCommands();
+});
+
+document.getElementById('btnSetupSuctionClear')?.addEventListener('click', () => {
+    state.suctionMode = 'manual';
+    state.suctionZones = [false, false, false, false, false, false];
+    updateSuctionUI();
+    sendSuctionCommands();
 });
 
 // 6. Context-Sensitive Properties Inspector
@@ -2774,6 +3218,7 @@ function updateExecutionProgress() {
         }
     }
     
+    let etaText = "Time remaining: --:--";
     if (etaLabel) {
         if (state.isSending && total > 0 && current < total) {
             const segmentLen = parseFloat(document.getElementById('segmentLengthInput')?.value) || 1.0;
@@ -2786,10 +3231,35 @@ function updateExecutionProgress() {
             const formattedMins = mins.toString().padStart(2, '0');
             const formattedSecs = secs.toString().padStart(2, '0');
             
-            etaLabel.textContent = `Time remaining: ${formattedMins}:${formattedSecs}`;
+            etaText = `Time remaining: ${formattedMins}:${formattedSecs}`;
+            etaLabel.textContent = etaText;
         } else {
             etaLabel.textContent = "Time remaining: --:--";
         }
+    }
+
+    // Sync to HUD overlays
+    const hudStatus = document.getElementById('hudProgressStatus');
+    const hudPercent = document.getElementById('hudProgressPercent');
+    const hudBarInner = document.getElementById('hudProgressBarInner');
+    const hudEta = document.getElementById('hudProgressEta');
+    const hudSegments = document.getElementById('hudProgressSegments');
+
+    if (hudStatus && statusLabel) {
+        hudStatus.textContent = statusLabel.textContent;
+        hudStatus.className = `hud-progress-status ${state.isPaused ? 'status-paused' : (state.isSending ? 'status-running' : 'status-idle')}`;
+    }
+    if (hudPercent) {
+        hudPercent.textContent = `${Math.round(pct)}%`;
+    }
+    if (hudBarInner) {
+        hudBarInner.style.width = `${pct}%`;
+    }
+    if (hudEta) {
+        hudEta.textContent = etaText;
+    }
+    if (hudSegments && segmentsLabel) {
+        hudSegments.textContent = segmentsLabel.textContent;
     }
 }
 
@@ -2809,5 +3279,183 @@ if (drawStrokeWidthInput) {
     });
 }
 
+// --- Layout Resizers ---
+const resizerRight = document.getElementById('resizerRight');
+const runGridLayout = document.getElementById('runGridLayout');
+
+let isResizingRight = false;
+
+if (resizerRight && runGridLayout) {
+    resizerRight.addEventListener('mousedown', (e) => {
+        isResizingRight = true;
+        document.body.style.cursor = 'col-resize';
+        resizerRight.classList.add('resizing');
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isResizingRight) return;
+        
+        // Disable text selection while dragging
+        e.preventDefault();
+        
+        const containerRect = runGridLayout.getBoundingClientRect();
+        
+        // Calculate new width for the right panel
+        let newWidth = containerRect.right - e.clientX;
+        // Constrain width
+        if (newWidth < 240) newWidth = 240;
+        if (newWidth > 600) newWidth = 600;
+        
+        runGridLayout.style.gridTemplateColumns = `1fr 4px ${newWidth}px`;
+        
+        // Re-render canvas
+        requestAnimationFrame(updateViewer);
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (isResizingRight) {
+            isResizingRight = false;
+            document.body.style.cursor = '';
+            resizerRight.classList.remove('resizing');
+        }
+    });
+}
+
+// --- Sidebar Tab Switcher ---
+document.querySelectorAll('.sidebar-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        // Toggle active tab class
+        document.querySelectorAll('.sidebar-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+
+        // Hide all panels
+        document.querySelectorAll('.sidebar-content-panel').forEach(panel => {
+            panel.classList.add('hidden');
+        });
+
+        // Show selected panel
+        const targetPanel = tab.dataset.panel;
+        if (targetPanel === 'run') {
+            document.getElementById('sidebarPanelControl')?.classList.remove('hidden');
+        } else if (targetPanel === 'position') {
+            document.getElementById('sidebarPanelJog')?.classList.remove('hidden');
+        } else if (targetPanel === 'console') {
+            document.getElementById('sidebarPanelTerminal')?.classList.remove('hidden');
+        }
+    });
+});
+
+// --- Virtual Joystick Controller ---
+function initJoystick() {
+    const boundary = document.getElementById('joystickBoundary');
+    const knob = document.getElementById('joystickKnob');
+    if (!boundary || !knob) return;
+
+    let isDragging = false;
+    let dragInterval = null;
+    let currentX = 0; // relative to center
+    let currentY = 0; // relative to center
+
+    const maxRadius = 36; // px limit
+    const deadzone = 12; // px
+
+    function handleStart(e) {
+        isDragging = true;
+        boundary.style.cursor = 'grabbing';
+        updatePosition(e);
+        
+        // Start the repeating jog loop
+        if (!dragInterval) {
+            dragInterval = setInterval(() => {
+                if (!isDragging) return;
+                const dist = Math.sqrt(currentX * currentX + currentY * currentY);
+                if (dist > deadzone) {
+                    const angle = Math.atan2(-currentY, currentX); // Y is inverted in screen coords
+                    const deg = (angle * 180) / Math.PI;
+                    const normDeg = (deg + 360) % 360;
+                    
+                    let stepX = 0;
+                    let stepY = 0;
+                    if (normDeg >= 337.5 || normDeg < 22.5) {
+                        stepX = 1; stepY = 0; // X+
+                    } else if (normDeg >= 22.5 && normDeg < 67.5) {
+                        stepX = 1; stepY = 1; // X+, Y+
+                    } else if (normDeg >= 67.5 && normDeg < 112.5) {
+                        stepX = 0; stepY = 1; // Y+
+                    } else if (normDeg >= 112.5 && normDeg < 157.5) {
+                        stepX = -1; stepY = 1; // X-, Y+
+                    } else if (normDeg >= 157.5 && normDeg < 202.5) {
+                        stepX = -1; stepY = 0; // X-
+                    } else if (normDeg >= 202.5 && normDeg < 247.5) {
+                        stepX = -1; stepY = -1; // X-, Y-
+                    } else if (normDeg >= 247.5 && normDeg < 292.5) {
+                        stepX = 0; stepY = -1; // Y-
+                    } else if (normDeg >= 292.5 && normDeg < 337.5) {
+                        stepX = 1; stepY = -1; // X+, Y-
+                    }
+                    
+                    // Call the main controller's sendJog method
+                    sendJog(stepX * jogState.stepLinear, stepY * jogState.stepLinear, 0, 0);
+                }
+            }, 150);
+        }
+    }
+
+    function updatePosition(e) {
+        if (!isDragging) return;
+        const rect = boundary.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+
+        let clientX, clientY;
+        if (e.touches && e.touches.length > 0) {
+            clientX = e.touches[0].clientX;
+            clientY = e.touches[0].clientY;
+        } else {
+            clientX = e.clientX;
+            clientY = e.clientY;
+        }
+
+        let dx = clientX - centerX;
+        let dy = clientY - centerY;
+
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > maxRadius) {
+            dx = (dx / dist) * maxRadius;
+            dy = (dy / dist) * maxRadius;
+        }
+
+        currentX = dx;
+        currentY = dy;
+
+        knob.style.transform = `translate(${dx}px, ${dy}px)`;
+    }
+
+    function handleEnd() {
+        if (!isDragging) return;
+        isDragging = false;
+        boundary.style.cursor = 'grab';
+        currentX = 0;
+        currentY = 0;
+        knob.style.transform = 'translate(0px, 0px)';
+        if (dragInterval) {
+            clearInterval(dragInterval);
+            dragInterval = null;
+        }
+    }
+
+    boundary.addEventListener('mousedown', handleStart);
+    boundary.addEventListener('touchstart', handleStart, { passive: true });
+
+    document.addEventListener('mousemove', updatePosition);
+    document.addEventListener('touchmove', updatePosition, { passive: false });
+
+    document.addEventListener('mouseup', handleEnd);
+    document.addEventListener('touchend', handleEnd);
+}
+
+// Initialize joystick
+initJoystick();
+
 // Initial mode switch to Prepare
-switchMode('prepare');
+window.switchMode('prepare');

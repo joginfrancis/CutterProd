@@ -50,7 +50,7 @@
  * @param {number} activePathIndex - Index of the last executed path segment (for animation).
  * @param {Uint8Array[]} [packets] - Binary MicroSegment packets from SvgConverter.
  */
-export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canvasContainer', stepsPerMM = 1.0, activePathIndex = -1, packets = null) {
+export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canvasContainer', stepsPerMM = 1.0, activePathIndex = -1, packets = null, suctionZones = null, toolheadPos = null) {
     const canvas = document.getElementById(canvasId);
     const container = document.getElementById(containerId);
     if (!canvas || !container) return;
@@ -314,6 +314,50 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
     // --- 5. Draw! ---
     ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear screen
 
+    // Draw Suction (Vacuum) Zones
+    if (suctionZones && suctionZones.length === 6) {
+        ctx.save();
+        for (let idx = 0; idx < 6; idx++) {
+            const r = Math.floor(idx / 2);
+            const c = idx % 2;
+
+            const xMin = c === 0 ? bedW / 2 : 0;
+            const xMax = c === 0 ? bedW : bedW / 2;
+            const yMin = (2 - r) * (bedH / 3);
+            const yMax = (3 - r) * (bedH / 3);
+
+            const cx = mapX(xMax);
+            const cy = mapY(yMax);
+            const cw = Math.abs(mapX(xMax) - mapX(xMin));
+            const ch = Math.abs(mapY(yMax) - mapY(yMin));
+
+            const isActive = suctionZones[idx];
+
+            if (isActive) {
+                ctx.fillStyle = 'rgba(16, 185, 129, 0.15)'; // light green
+                ctx.fillRect(cx, cy, cw, ch);
+
+                ctx.strokeStyle = '#10b981'; // green
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(cx, cy, cw, ch);
+            } else {
+                ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)'; // faint gray
+                ctx.lineWidth = 1;
+                ctx.setLineDash([3, 3]);
+                ctx.strokeRect(cx, cy, cw, ch);
+            }
+
+            // Draw zone numbers for easy identification
+            ctx.fillStyle = isActive ? '#059669' : 'rgba(148, 163, 184, 0.5)';
+            ctx.font = '500 11px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`Zone ${idx + 1}`, cx + cw / 2, cy + ch / 2);
+        }
+        ctx.restore();
+    }
+
     // Draw Bed Border
     ctx.setLineDash([10, 5]); // Dashed line
     ctx.strokeStyle = '#cbd5e1'; // Light grey
@@ -440,9 +484,8 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
     canvas.addEventListener('click', canvas._clickHandler);
 
     // Draw Gantry Footprint
-    if (paths.length > 0) {
-        // Gantry is centered on the current tool position (cur) or the active path position
-        let gantryCenter = cur;
+    const gantryCenter = toolheadPos || (paths.length > 0 ? cur : null);
+    if (gantryCenter) {
         // Top-right in machine space becomes top-left in canvas space after X inversion.
         const gantryRight_machine = gantryCenter.x + gantryW / 2;
         const gantryTop_machine = gantryCenter.y + gantryH / 2;

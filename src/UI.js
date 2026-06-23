@@ -51,9 +51,9 @@ export function updateStatus(isConnected) {
     
     if (isConnected) {
         statusText.textContent = "Connected";
-        statusBadge.style.backgroundColor = "rgba(16, 185, 129, 0.15)";
-        statusBadge.style.borderColor = "rgba(16, 185, 129, 0.25)";
-        statusBadge.style.color = "#a7f3d0";           // Light Green text
+        statusBadge.style.backgroundColor = "rgba(16, 185, 129, 0.1)";
+        statusBadge.style.borderColor = "rgba(16, 185, 129, 0.2)";
+        statusBadge.style.color = "#059669";           // Dark Green text for light theme
         statusDot.style.backgroundColor = "#10b981";   // Bright Green dot
         if (btnStart) btnStart.disabled = false; // Enable Start button
         
@@ -62,9 +62,9 @@ export function updateStatus(isConnected) {
         }
     } else {
         statusText.textContent = "Disconnected";
-        statusBadge.style.backgroundColor = "rgba(239, 68, 68, 0.15)";
-        statusBadge.style.borderColor = "rgba(239, 68, 68, 0.25)";
-        statusBadge.style.color = "#fca5a5";           // Light Red text
+        statusBadge.style.backgroundColor = "rgba(239, 68, 68, 0.1)";
+        statusBadge.style.borderColor = "rgba(239, 68, 68, 0.2)";
+        statusBadge.style.color = "#dc2626";           // Dark Red text for light theme
         statusDot.style.backgroundColor = "#ef4444";   // Bright Red dot
         if (btnStart) btnStart.disabled = !isSimMode;  // Disable Start button (safety) unless in simulation mode
         

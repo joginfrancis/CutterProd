@@ -65,7 +65,14 @@ export function setupTabs(getState, drawBridge = null) {
 
         if (tabName === 'editor') {
             const editorEl = document.getElementById('gcodeEditor');
-            if (editorEl) editorEl.classList.remove('hidden');
+            if (editorEl) {
+                editorEl.classList.remove('hidden');
+                const state = getState();
+                if (window.canvasEditor && window.canvasEditor.shapes.length > 0) {
+                    editorEl.value = window.canvasEditor.exportAsSVG();
+                    state.gcode = editorEl.value;
+                }
+            }
         }
 
         if (tabName === 'draw') {
