@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UrumiCutter V2 - Control Dashboard</title>
-    <link rel="stylesheet" href="styles.css?v=9">
+    <link rel="stylesheet" href="styles.css?v=13">
     <!-- Google Font for Outfit and Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -143,7 +143,7 @@
                                 </svg>
                                 Load
                             </button>
-                            <button class="draw-tool-btn" id="dtVision" title="Vision (UrumiCam camera)" onclick="window.open('http://localhost:5000','_blank')">
+                            <button class="draw-tool-btn" id="dtVision" title="Vision (phone camera over WebRTC)">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
                                     <circle cx="12" cy="13" r="4"></circle>
@@ -236,7 +236,7 @@
                         <div class="run-card">
                             <div class="card-title-row">
                                 <h4 class="card-title">Manual Jog</h4>
-                                <button class="jog-reset-pos-btn" id="jogResetPos" title="Zero out displayed positions">Reset Zero</button>
+                                <button class="jog-reset-pos-btn jog-reset-icon" id="jogResetPos" title="Zero out the displayed position (display only)">&#8635;</button>
                             </div>
                             <div class="dro-grid">
                                 <div class="dro-cell"><span>X</span><strong id="jogPosX">0.00</strong></div>
@@ -306,10 +306,9 @@
                             <h4 class="card-title">Machine Controls</h4>
                             <div class="machine-controls-grid">
                                 <button class="btn btn-action" onclick="document.getElementById('jogHome').click()">Home All</button>
-                                <button id="btnSetOrigin" class="btn btn-action">Set Origin (Zero)</button>
+                                <button id="btnSetOrigin" class="btn btn-action">Set Origin</button>
                                 <button id="btnToggleMotors" class="btn btn-action" data-enabled="false">Enable Motors</button>
-                                <button id="btnSuctionManualOn" class="btn btn-action">Suction ON</button>
-                                <button id="btnSuctionManualOff" class="btn btn-action active">Suction OFF</button>
+                                <button id="btnSuctionToggle" class="btn btn-action" data-on="false">Suction: Off</button>
                             </div>
                         </div>
                     </div>
@@ -328,8 +327,19 @@
                     <!-- RIGHT: Status & Console Sidebar -->
                     <div class="run-sidebar-panel">
                         <!-- Progress & Control -->
-                        <div class="run-card">
+                        <div class="run-card sidebar-pane" id="jobPane">
                             <h4 class="card-title">Job Execution</h4>
+                            <div class="status-strip">
+                                <span class="activity-status-item" id="activityConnection" title="Connection status">
+                                    <span class="status-circle-indicator disconnected"></span>Conn
+                                </span>
+                                <span class="activity-status-item" id="activityMotors" title="Motor drivers ready">
+                                    <span class="status-circle-indicator disabled"></span>Motors
+                                </span>
+                                <span class="activity-status-item" id="activityFile" title="Toolpath file loaded">
+                                    <span class="status-circle-indicator missing"></span>File
+                                </span>
+                            </div>
                             <div class="execution-progress-row">
                                 <div class="progress-details">
                                     <span class="status-tag tag-idle" id="runStatusLabel">Idle</span>
@@ -347,43 +357,30 @@
                             </div>
                         </div>
 
-                        <!-- System Checklist -->
-                        <div class="run-card">
-                            <h4 class="card-title">System Status Checklist</h4>
-                            <div class="activity-status-list">
-                                <div class="activity-status-item" id="activityConnection">
-                                    <span class="status-circle-indicator disconnected"></span>
-                                    <span class="activity-label">Connection Status</span>
-                                </div>
-                                <div class="activity-status-item" id="activityMotors">
-                                    <span class="status-circle-indicator disabled"></span>
-                                    <span class="activity-label">Motor Drivers Ready</span>
-                                </div>
-                                <div class="activity-status-item" id="activityFile">
-                                    <span class="status-circle-indicator missing"></span>
-                                    <span class="activity-label">Toolpath File Loaded</span>
-                                </div>
-                            </div>
-                        </div>
+                        <!-- Drag handle to resize Job vs Terminal -->
+                        <div class="sidebar-resizer" id="sidebarResizer" title="Drag to resize"><span></span></div>
 
                         <!-- Terminal Log Stream -->
-                        <div class="run-card run-terminal-card" style="flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 200px;">
+                        <div class="run-card run-terminal-card sidebar-pane-flex" style="display: flex; flex-direction: column; overflow: hidden;">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
                                 <h4 class="card-title" style="margin-bottom: 0;">Terminal Console</h4>
                                 <button id="btnClear" class="btn btn-action" style="padding: 0.15rem 0.4rem; font-size: 0.65rem;">Clear</button>
                             </div>
-                            <div class="quick-actions-bar" style="display: flex; gap: 0.25rem; margin-bottom: 0.35rem; align-items: center; flex-wrap: wrap;">
-                                <button id="btnPingAll" class="btn btn-action" style="font-size: 0.68rem; padding: 0.25rem 0.4rem;">Ping All</button>
-                                <div class="ping-input-group" style="display: flex; align-items: center; gap: 0.25rem;">
-                                    <input type="number" id="pingNodeId" placeholder="ID" style="width: 35px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; color: white; padding: 0.2rem; font-size: 0.68rem; text-align: center; outline: none;">
-                                    <button id="btnPingNode" class="btn btn-action" style="font-size: 0.68rem; padding: 0.25rem 0.4rem;">Ping</button>
+                            <details class="diagnostics-disclosure">
+                                <summary>Diagnostics</summary>
+                                <div class="quick-actions-bar" style="display: flex; gap: 0.25rem; margin-top: 0.35rem; align-items: center; flex-wrap: wrap;">
+                                    <button id="btnPingAll" class="btn btn-action" style="font-size: 0.68rem; padding: 0.25rem 0.4rem;">Ping All</button>
+                                    <div class="ping-input-group" style="display: flex; align-items: center; gap: 0.25rem;">
+                                        <input type="number" id="pingNodeId" placeholder="ID" style="width: 35px; background: #ffffff; border: 1px solid var(--border-dark); border-radius: 4px; color: var(--text-dark); padding: 0.2rem; font-size: 0.68rem; text-align: center; outline: none;">
+                                        <button id="btnPingNode" class="btn btn-action" style="font-size: 0.68rem; padding: 0.25rem 0.4rem;">Ping</button>
+                                    </div>
                                 </div>
-                            </div>
-                            <div class="console-output" id="consoleOutput" style="flex: 1; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.06); border-radius: 4px; padding: 0.5rem; font-family: var(--font-mono); font-size: 0.72rem; overflow-y: auto; color: #10b981; max-height: none;">
+                            </details>
+                            <div class="console-output" id="consoleOutput" style="background: #f8fafc; border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem; font-family: var(--font-mono); font-size: 0.72rem; overflow-y: auto; color: #1e293b; flex: 1; min-height: 0;">
                                 <div class="console-line log-info">System initialized...</div>
                             </div>
                             <div class="console-input-area" style="display: flex; margin-top: 0.5rem; gap: 0.25rem;">
-                                <input type="text" id="cmdInput" placeholder="Type direct command..." autocomplete="off" style="flex: 1; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; color: white; padding: 0.3rem 0.5rem; font-size: 0.75rem; font-family: var(--font-mono); outline: none;">
+                                <input type="text" id="cmdInput" placeholder="Type direct command..." autocomplete="off" style="flex: 1; background: #ffffff; border: 1px solid var(--border-dark); border-radius: 4px; color: var(--text-dark); padding: 0.3rem 0.5rem; font-size: 0.75rem; font-family: var(--font-mono); outline: none;">
                                 <button class="btn btn-primary" id="btnRun" style="padding: 0.3rem 0.6rem; font-size: 0.75rem;">Send</button>
                             </div>
                         </div>
@@ -606,9 +603,53 @@
         </div>
     </div>
 
+    <!-- VISION: phone-camera capture over WebRTC (PeerJS) -->
+    <div id="visionQrModal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel" style="width: 360px;">
+            <div class="modal-header">
+                <h2>Vision — Phone Camera</h2>
+                <button id="btnCloseVisionModal" class="btn-icon">&times;</button>
+            </div>
+            <div class="modal-body" style="display:flex; flex-direction:column; align-items:center; gap:1rem; text-align:center;">
+                <p style="font-size:0.85rem; color:var(--text-muted); margin:0;">
+                    Scan with your phone to open the camera. The photo is sent straight
+                    into this canvas over a direct peer-to-peer link.
+                </p>
+                <div id="visionQrContainer" style="min-height:180px; display:flex; align-items:center; justify-content:center;"></div>
+                <div id="visionCropArea" style="display:none; position:relative; width:100%; touch-action:none; user-select:none; -webkit-user-select:none;">
+                    <canvas id="visionCropCanvas" style="display:block; width:100%; touch-action:none; cursor:grab; border-radius:8px; background:#1a1a1a;"></canvas>
+                    <canvas id="visionLoupe" width="140" height="140" style="position:absolute; display:none; width:140px; height:140px; border-radius:50%; pointer-events:none; border:3px solid #fff; box-shadow:0 3px 14px rgba(0,0,0,0.45); z-index:5;"></canvas>
+                </div>
+                <p id="visionStatusText" style="font-size:0.85rem; font-weight:500; margin:0;">Starting…</p>
+
+                <!-- Paper-size normalisation controls (shown once a photo arrives) -->
+                <div id="visionPaperControls" style="display:none; width:100%; flex-direction:column; gap:0.5rem;">
+                    <label style="font-size:0.8rem; color:var(--text-muted); display:flex; align-items:center; gap:0.5rem; justify-content:space-between;">
+                        <span>Paper size</span>
+                        <select id="visionPaperSize" style="flex:1; max-width:60%; padding:0.35rem; border-radius:6px; border:1px solid var(--border);">
+                            <option value="A4">A4 — 210 × 297 mm</option>
+                            <option value="A3">A3 — 297 × 420 mm</option>
+                            <option value="A5">A5 — 148 × 210 mm</option>
+                            <option value="Letter">Letter — 216 × 279 mm</option>
+                            <option value="custom">Custom…</option>
+                        </select>
+                    </label>
+                    <div id="visionCustomSize" style="display:none; gap:0.4rem; align-items:center; justify-content:flex-end; font-size:0.8rem; color:var(--text-muted);">
+                        <input type="number" id="visionPaperW" value="210" min="10" step="1" style="width:64px; padding:0.3rem; border-radius:6px; border:1px solid var(--border);"> ×
+                        <input type="number" id="visionPaperH" value="297" min="10" step="1" style="width:64px; padding:0.3rem; border-radius:6px; border:1px solid var(--border);"> mm
+                    </div>
+                </div>
+
+                <p id="visionCropHint" style="display:none; font-size:0.72rem; color:var(--text-muted); margin:0;">Scroll to zoom · drag the image to pan · drag a corner to the paper edge.</p>
+                <button id="btnVisionAddToCanvas" class="btn-primary" style="display:none; width:100%;">Crop, Flatten &amp; Add to Canvas</button>
+            </div>
+        </div>
+    </div>
+
     <!-- SCRIPTS -->
+    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="trace_skeleton.js"></script>
-    <script type="module" src="script.js?v=21"></script>
+    <script type="module" src="script.js?v=22"></script>
 
 </body>
 </html>

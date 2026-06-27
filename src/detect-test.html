@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Page Detection Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; background:#111; color:#eee; margin:0; padding:1rem; }
+  h1 { font-size:1.1rem; }
+  .row { display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start; }
+  canvas { background:#000; max-width:100%; border:1px solid #333; border-radius:6px; }
+  #out { font-family:monospace; font-size:0.8rem; white-space:pre; color:#9ae6b4; }
+  label.btn { display:inline-block; background:#3b82f6; color:#fff; padding:0.5rem 1rem; border-radius:6px; cursor:pointer; }
+  input[type=file]{display:none;}
+  .controls{margin:0.75rem 0; display:flex; gap:1rem; align-items:center; flex-wrap:wrap;}
+</style>
+</head>
+<body>
+  <h1>A4 / Page Detection Test</h1>
+  <div class="controls">
+    <label class="btn">Load photo<input type="file" id="file" accept="image/*"></label>
+    <label><input type="checkbox" id="showEdges"> show edge map</label>
+  </div>
+  <div class="row">
+    <canvas id="cv"></canvas>
+    <div id="out">Load a photo to test detection…</div>
+  </div>
+
+<script>
+const PROC = 480; // detection working width
+const fileEl = document.getElementById('file');
+const showEdges = document.getElementById('showEdges');
+const cv = document.getElementById('cv');
+const out = document.getElementById('out');
+let curImg = null;
+
+fileEl.onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const img = new Image();
+  img.onload = () => { curImg = img; run(); };
+  img.src = URL.createObjectURL(f);
+};
+showEdges.onchange = () => curImg && run();
+
+function run() {
+  const w = PROC, h = Math.round(PROC * curImg.naturalHeight / curImg.naturalWidth);
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(curImg, 0, 0, w, h);
+  const id = ctx.getImageData(0, 0, w, h);
+  const res = detectDoc(id.data, w, h);
+
+  if (showEdges.checked && res.edges) {
+    const ed = ctx.createImageData(w, h);
+    for (let i = 0; i < w*h; i++) { const v = res.edges[i]?255:0; ed.data[i*4]=ed.data[i*4+1]=ed.data[i*4+2]=v; ed.data[i*4+3]=255; }
+    ctx.putImageData(ed, 0, 0);
+  }
+  if (res.quad) {
+    ctx.lineWidth = 3; ctx.lineJoin = 'round';
+    ctx.strokeStyle = res.conf > 0.30 ? '#22c55e' : '#60a5fa';
+    ctx.fillStyle = res.conf > 0.30 ? 'rgba(34,197,94,0.18)' : 'rgba(96,165,250,0.14)';
+    ctx.beginPath(); ctx.moveTo(res.quad[0][0], res.quad[0][1]);
+    for (let i = 1; i < 4; i++) ctx.lineTo(res.quad[i][0], res.quad[i][1]);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    res.quad.forEach((p, i) => {
+      ctx.beginPath(); ctx.arc(p[0], p[1], 6, 0, 6.283); ctx.fillStyle = '#fff'; ctx.fill();
+      ctx.fillStyle = '#000'; ctx.font = '11px sans-serif'; ctx.fillText(['TL','TR','BR','BL'][i], p[0]-7, p[1]+4);
+    });
+  }
+  out.textContent = JSON.stringify({
+    frame: [w, h],
+    detected: !!res.quad,
+    confidence: +res.conf.toFixed(3),
+    components: res.nComps,
+    quad: res.quad ? res.quad.map(p => [Math.round(p[0]), Math.round(p[1])]) : null,
+  }, null, 2);
+}
+
+// ── Region-based detector: segment the page as a foreground blob, fill its internal
+//    texture, take the largest central blob, then its 4 corners. Robust to busy covers.
+function detectDoc(data, w, h) {
+  const N = w * h;
+  // grayscale + 3x3 box blur
+  const g0 = new Float32Array(N);
+  for (let i = 0, p = 0; i < N; i++, p += 4) g0[i] = 0.299*data[p] + 0.587*data[p+1] + 0.114*data[p+2];
+  const g = new Uint8Array(N);
+  for (let y = 1; y < h-1; y++) for (let x = 1; x < w-1; x++) { const o = y*w+x;
+    g[o] = (g0[o-w-1]+g0[o-w]+g0[o-w+1]+g0[o-1]+g0[o]+g0[o+1]+g0[o+w-1]+g0[o+w]+g0[o+w+1]) / 9; }
+
+  // Otsu threshold
+  const hist = new Array(256).fill(0);
+  for (let i = 0; i < N; i++) hist[g[i]]++;
+  let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sumB = 0, wB = 0, maxVar = -1, thr = 127;
+  for (let t = 0; t < 256; t++) { wB += hist[t]; if (!wB) continue; const wF = N - wB; if (!wF) break;
+    sumB += t * hist[t]; const mB = sumB/wB, mF = (sum-sumB)/wF; const v = wB*wF*(mB-mF)*(mB-mF);
+    if (v > maxVar) { maxVar = v; thr = t; } }
+
+  // polarity: is the page (centre) darker or lighter than the surround?
+  let cen = 0, cn = 0, bor = 0, bn = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const o = y*w+x;
+    if (x>w*0.35 && x<w*0.65 && y>h*0.35 && y<h*0.65) { cen += g[o]; cn++; }
+    else if (x<w*0.06 || x>w*0.94 || y<h*0.06 || y>h*0.94) { bor += g[o]; bn++; } }
+  const centerDark = (cen/cn) < (bor/bn);
+
+  // foreground mask = page side of the threshold
+  const fg = new Uint8Array(N);
+  for (let i = 0; i < N; i++) fg[i] = centerDark ? (g[i] < thr ? 1 : 0) : (g[i] > thr ? 1 : 0);
+
+  // dilate 1px to seal thin gaps in the outline
+  const fd = new Uint8Array(N);
+  for (let y = 1; y < h-1; y++) for (let x = 1; x < w-1; x++) { const o = y*w+x;
+    if (fg[o]||fg[o-1]||fg[o+1]||fg[o-w]||fg[o+w]) fd[o] = 1; }
+
+  // fill internal holes: flood background inward from the border, then any non-bg gap = fill
+  const bg = new Uint8Array(N); const st = [];
+  for (let x = 0; x < w; x++) { if (!fd[x]) { bg[x]=1; st.push(x); } const o=(h-1)*w+x; if (!fd[o]) { bg[o]=1; st.push(o); } }
+  for (let y = 0; y < h; y++) { const a=y*w, b=y*w+w-1; if (!fd[a]) { bg[a]=1; st.push(a); } if (!fd[b]) { bg[b]=1; st.push(b); } }
+  while (st.length) { const o = st.pop(); const x = o % w, y = (o-x)/w;
+    const nb = [o-1,o+1,o-w,o+w];
+    for (let k = 0; k < 4; k++) { const no = nb[k];
+      if (no<0||no>=N) continue;
+      if (k===0 && x===0) continue; if (k===1 && x===w-1) continue;
+      if (!fd[no] && !bg[no]) { bg[no]=1; st.push(no); } } }
+  const filled = new Uint8Array(N);
+  for (let i = 0; i < N; i++) filled[i] = (fd[i] || !bg[i]) ? 1 : 0;
+
+  // largest central blob
+  const label = new Int32Array(N), stack = []; let nComps = 0, best = null;
+  const cx0 = w/2, cy0 = h/2;
+  for (let s = 0; s < N; s++) { if (!filled[s] || label[s]) continue; nComps++;
+    let count=0, minS=1e9,maxS=-1e9,minD=1e9,maxD=-1e9, tl=null,tr=null,br=null,bl=null, tb=0,bb=0,lb=0,rb=0, sx=0, sy=0;
+    stack.length = 0; stack.push(s); label[s] = nComps;
+    while (stack.length) { const o = stack.pop(); count++; const x = o%w, y = (o-x)/w; sx+=x; sy+=y;
+      const su = x+y, di = x-y;
+      if (su<minS){minS=su;tl=[x,y];} if (su>maxS){maxS=su;br=[x,y];}
+      if (di>maxD){maxD=di;tr=[x,y];} if (di<minD){minD=di;bl=[x,y];}
+      if (y<=1)tb=1; if (y>=h-2)bb=1; if (x<=1)lb=1; if (x>=w-2)rb=1;
+      const nb = [o-1,o+1,o-w,o+w];
+      for (let k=0;k<4;k++){ const no=nb[k]; if (no<0||no>=N) continue;
+        if (k===0 && x===0) continue; if (k===1 && x===w-1) continue;
+        if (filled[no] && !label[no]) { label[no]=nComps; stack.push(no); } } }
+    const areaFrac = count / N, borders = tb+bb+lb+rb;
+    const cdist = Math.hypot(sx/count - cx0, sy/count - cy0) / Math.hypot(cx0, cy0);
+    if (areaFrac < 0.15 || areaFrac > 0.96 || borders >= 4 || cdist > 0.45) continue;
+    const quad = [tl,tr,br,bl];
+    let a = 0; for (let i=0;i<4;i++){ const p1=quad[i],p2=quad[(i+1)%4]; a += p1[0]*p2[1]-p2[0]*p1[1]; }
+    const quadFrac = Math.abs(a)/2/N;
+    const score = areaFrac - 0.05*borders - 0.3*cdist;
+    if (!best || score > best.score) best = { quad, conf: quadFrac, score };
+  }
+
+  return { quad: best ? best.quad : null, conf: best ? best.conf : 0, nComps, edges: filled };
+}
+</script>
+</body>
+</html>

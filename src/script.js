@@ -1634,12 +1634,399 @@ function closeVisionModal() {
     if (!visionQrModal) return;
     visionQrModal.classList.remove('visible');
     setTimeout(() => visionQrModal.classList.add('hidden'), 250);
+
+    // Tear down the WebRTC session — the next open starts a fresh peer + new QR
+    try { if (peerConnection) peerConnection.close(); } catch (e) {}
+    try { if (peer) peer.destroy(); } catch (e) {}
+    peerConnection = null;
+    peer = null;
 }
 
 document.getElementById('btnCloseVisionModal')?.addEventListener('click', closeVisionModal);
 visionQrModal?.addEventListener('click', (e) => {
     if (e.target === visionQrModal) closeVisionModal();
 });
+
+// ── Vision: manual 4-corner crop + perspective flatten (pure JS, no heavy libs) ─
+const PAPER_SIZES = {
+    A4:     { w: 210, h: 297 },
+    A3:     { w: 297, h: 420 },
+    A5:     { w: 148, h: 210 },
+    Letter: { w: 216, h: 279 },
+};
+
+let visionSourceImg = null;  // original received photo
+
+function getSelectedPaperMM() {
+    const sel = document.getElementById('visionPaperSize')?.value || 'A4';
+    if (sel === 'custom') {
+        const w = parseFloat(document.getElementById('visionPaperW')?.value) || 210;
+        const h = parseFloat(document.getElementById('visionPaperH')?.value) || 297;
+        return { w, h };
+    }
+    return PAPER_SIZES[sel] || PAPER_SIZES.A4;
+}
+
+// Order 4 points as [top-left, top-right, bottom-right, bottom-left].
+function _orderCorners(pts) {
+    const bySum  = [...pts].sort((a, b) => (a.x + a.y) - (b.x + b.y));
+    const byDiff = [...pts].sort((a, b) => (a.y - a.x) - (b.y - b.x));
+    return [bySum[0], byDiff[0], bySum[3], byDiff[3]]; // tl, tr, br, bl
+}
+
+// ── Interactive crop overlay (Google-Docs / CamScanner style, canvas-rendered) ─
+// cropCorners: [tl, tr, br, bl] in IMAGE-NATURAL pixel coordinates.
+// The photo is drawn onto the canvas with a view transform (zoom + pan), so the
+// image, handles and loupe all share ONE coordinate space — no letterboxing skew.
+let cropCorners   = null;
+let _activeCorner = -1;
+let _cropRO       = null;
+let _isPanning    = false;
+let _lastPan      = null;
+// view: screenPx = imgPx * (baseScale * z) + offset
+const cropView = { z: 1, ox: 0, oy: 0, baseScale: 1, boxW: 0, boxH: 0 };
+
+function showVisionPreview(img, detectedCorners) {
+    visionSourceImg = img;
+    document.getElementById('visionCropArea').style.display = 'block';
+    document.getElementById('visionPaperControls').style.display = 'flex';
+    document.getElementById('visionCropHint').style.display = 'block';
+    document.getElementById('btnVisionAddToCanvas').style.display = 'block';
+
+    const nw = img.naturalWidth || img.width, nh = img.naturalHeight || img.height;
+    // Use phone-detected page corners when valid (4 points inside the image), else a default rectangle
+    const valid = Array.isArray(detectedCorners) && detectedCorners.length === 4 &&
+        detectedCorners.every(p => p && isFinite(p.x) && isFinite(p.y) &&
+            p.x >= 0 && p.x <= nw && p.y >= 0 && p.y <= nh);
+    cropCorners = valid
+        ? detectedCorners.map(p => ({ x: p.x, y: p.y }))
+        : [
+            { x: nw * 0.15, y: nh * 0.15 }, { x: nw * 0.85, y: nh * 0.15 },
+            { x: nw * 0.85, y: nh * 0.85 }, { x: nw * 0.15, y: nh * 0.85 },
+        ];
+    bindCropPointer();
+    fitCropView();
+    if (!_cropRO) { _cropRO = new ResizeObserver(() => { fitCropView(); }); _cropRO.observe(document.getElementById('visionCropArea')); }
+
+    const status = document.getElementById('visionStatusText');
+    status.textContent = valid
+        ? 'Page auto-detected — fine-tune the corners if needed.'
+        : 'Scroll to zoom, then drag each corner to a paper edge.';
+    status.style.color = valid ? '#10b981' : '#60a5fa';
+}
+
+// Fit the whole photo into the canvas box at z=1 and centre it (retries until laid out).
+let _cropFitRetries = 0;
+function fitCropView() {
+    const area = document.getElementById('visionCropArea');
+    const boxW = area.clientWidth;
+    if (!boxW && _cropFitRetries < 60) { _cropFitRetries++; requestAnimationFrame(fitCropView); return; }
+    _cropFitRetries = 0;
+    if (!boxW || !visionSourceImg) return;
+
+    const nw = visionSourceImg.naturalWidth, nh = visionSourceImg.naturalHeight;
+    const maxH = Math.min(window.innerHeight * 0.5, 460);
+    const boxH = Math.min(maxH, boxW * (nh / nw));
+    cropView.boxW = boxW; cropView.boxH = boxH;
+    cropView.baseScale = Math.min(boxW / nw, boxH / nh);
+    cropView.z = 1;
+    cropView.ox = (boxW - nw * cropView.baseScale) / 2;
+    cropView.oy = (boxH - nh * cropView.baseScale) / 2;
+
+    const cv = document.getElementById('visionCropCanvas');
+    cv.style.height = boxH + 'px';
+    drawCropOverlay();
+}
+
+function _vs() { return cropView.baseScale * cropView.z; }         // current px-per-imgpx
+function imgToScreen(p) { const s = _vs(); return { x: cropView.ox + p.x * s, y: cropView.oy + p.y * s }; }
+function screenToImg(q) { const s = _vs(); return { x: (q.x - cropView.ox) / s, y: (q.y - cropView.oy) / s }; }
+
+function drawCropOverlay() {
+    if (!cropCorners || !visionSourceImg) return;
+    const cv = document.getElementById('visionCropCanvas');
+    const { boxW, boxH } = cropView;
+    if (!boxW || !boxH) return;
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(boxW * dpr); cv.height = Math.round(boxH * dpr);
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, boxW, boxH);
+
+    // Photo under the current view transform
+    const s = _vs();
+    ctx.drawImage(visionSourceImg, cropView.ox, cropView.oy,
+        visionSourceImg.naturalWidth * s, visionSourceImg.naturalHeight * s);
+
+    const d = cropCorners.map(imgToScreen);
+    // Dim outside the quad
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, boxW, boxH);
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath(); ctx.moveTo(d[0].x, d[0].y); d.slice(1).forEach(p => ctx.lineTo(p.x, p.y)); ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    // Quad outline
+    ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(d[0].x, d[0].y); d.slice(1).forEach(p => ctx.lineTo(p.x, p.y)); ctx.closePath(); ctx.stroke();
+    // Handles
+    d.forEach(p => {
+        ctx.beginPath(); ctx.arc(p.x, p.y, 9, 0, 2 * Math.PI);
+        ctx.fillStyle = 'rgba(255,255,255,0.95)'; ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = '#3b82f6'; ctx.stroke();
+        ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, 2 * Math.PI); ctx.fillStyle = '#3b82f6'; ctx.fill();
+    });
+}
+
+function _localXY(e) {
+    const r = document.getElementById('visionCropCanvas').getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function bindCropPointer() {
+    const cv = document.getElementById('visionCropCanvas');
+    if (cv._cropBound) return; cv._cropBound = true;
+
+    const down = (e) => {
+        const q = _localXY(e);
+        // hit-test handles in SCREEN space
+        let nearest = -1, best = Infinity;
+        cropCorners.forEach((c, i) => { const sp = imgToScreen(c); const dist = Math.hypot(sp.x - q.x, sp.y - q.y); if (dist < best) { best = dist; nearest = i; } });
+        if (best <= 22) { _activeCorner = nearest; }
+        else { _isPanning = true; _lastPan = q; cv.style.cursor = 'grabbing'; }
+        cv.setPointerCapture(e.pointerId);
+        if (_activeCorner >= 0) updateLoupe();
+        e.preventDefault();
+    };
+    const move = (e) => {
+        const q = _localXY(e);
+        if (_activeCorner >= 0) {
+            const p = screenToImg(q);
+            const nw = visionSourceImg.naturalWidth, nh = visionSourceImg.naturalHeight;
+            cropCorners[_activeCorner] = { x: Math.max(0, Math.min(nw, p.x)), y: Math.max(0, Math.min(nh, p.y)) };
+            drawCropOverlay(); updateLoupe(); e.preventDefault();
+        } else if (_isPanning) {
+            cropView.ox += q.x - _lastPan.x; cropView.oy += q.y - _lastPan.y; _lastPan = q;
+            clampCropPan(); drawCropOverlay(); e.preventDefault();
+        }
+    };
+    const up = () => {
+        _activeCorner = -1; _isPanning = false; _lastPan = null;
+        cv.style.cursor = 'grab';
+        document.getElementById('visionLoupe').style.display = 'none';
+    };
+
+    const wheel = (e) => {
+        e.preventDefault();
+        const q = _localXY(e);
+        const pim = screenToImg(q);
+        const factor = Math.exp(-e.deltaY * 0.0015);
+        cropView.z = Math.max(1, Math.min(8, cropView.z * factor));
+        const s = _vs();
+        cropView.ox = q.x - pim.x * s; cropView.oy = q.y - pim.y * s;
+        clampCropPan(); drawCropOverlay();
+    };
+
+    cv.addEventListener('pointerdown', down);
+    cv.addEventListener('pointermove', move);
+    cv.addEventListener('pointerup', up);
+    cv.addEventListener('pointercancel', up);
+    cv.addEventListener('wheel', wheel, { passive: false });
+}
+
+// Keep at least part of the image within the viewport.
+function clampCropPan() {
+    const s = _vs();
+    const iw = visionSourceImg.naturalWidth * s, ih = visionSourceImg.naturalHeight * s;
+    const { boxW, boxH } = cropView;
+    const margin = 40;
+    cropView.ox = Math.min(boxW - margin, Math.max(margin - iw, cropView.ox));
+    cropView.oy = Math.min(boxH - margin, Math.max(margin - ih, cropView.oy));
+}
+
+// Magnifier bubble centred on the corner being dragged.
+function updateLoupe() {
+    if (_activeCorner < 0) return;
+    const loupe = document.getElementById('visionLoupe');
+    const corner = cropCorners[_activeCorner];
+    const size = 140, Z = 2;
+    const ctx = loupe.getContext('2d');
+    const s = _vs();
+    const halfNat = (size / 2) / (s * Z); // natural px shown each side (tracks current zoom)
+
+    // Corner role for the active handle (cropCorners order = tl, tr, br, bl)
+    const CORNER = [
+        { name: 'Top-Left',     hx:  1, vy:  1 },
+        { name: 'Top-Right',    hx: -1, vy:  1 },
+        { name: 'Bottom-Right', hx: -1, vy: -1 },
+        { name: 'Bottom-Left',  hx:  1, vy: -1 },
+    ][_activeCorner] || { name: '', hx: 1, vy: 1 };
+    const cx = size / 2, cy = size / 2, arm = 22;
+
+    ctx.clearRect(0, 0, size, size);
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, size / 2, 0, 2 * Math.PI); ctx.clip();
+    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, size, size);
+    ctx.drawImage(visionSourceImg, corner.x - halfNat, corner.y - halfNat, halfNat * 2, halfNat * 2, 0, 0, size, size);
+
+    // L-shaped bracket oriented to the paper corner this handle represents
+    ctx.strokeStyle = 'rgba(59,130,246,0.95)'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx + CORNER.hx * arm, cy); ctx.lineTo(cx, cy);
+    ctx.lineTo(cx, cy + CORNER.vy * arm); ctx.stroke();
+    // Snap point highlight
+    ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, 2 * Math.PI);
+    ctx.fillStyle = '#3b82f6'; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.stroke();
+    ctx.restore();
+
+    // Corner label pill at the bottom of the bubble
+    ctx.save();
+    ctx.font = '600 12px Inter, system-ui, sans-serif';
+    const label = CORNER.name;
+    const tw = ctx.measureText(label).width, pad = 8, ph = 18, py = size - 26;
+    ctx.fillStyle = 'rgba(59,130,246,0.92)';
+    if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(cx - tw / 2 - pad, py, tw + pad * 2, ph, 9); ctx.fill(); }
+    else ctx.fillRect(cx - tw / 2 - pad, py, tw + pad * 2, ph);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, cx, py + ph / 2);
+    ctx.restore();
+
+    // Position bubble near the handle (screen space), clamped to the box
+    const scr = imgToScreen(corner);
+    let left = scr.x - size / 2;
+    let top  = scr.y - size - 18;
+    if (top < 0) top = scr.y + 18;
+    left = Math.max(0, Math.min(cropView.boxW - size, left));
+    top  = Math.max(0, Math.min(cropView.boxH - size, top));
+    loupe.style.left = left + 'px';
+    loupe.style.top  = top + 'px';
+    loupe.style.display = 'block';
+}
+
+// Solve the 8-DOF homography mapping dst points -> src points (so src = H·dst).
+function _solveHomography(dst, src) {
+    const A = [], b = [];
+    for (let i = 0; i < 4; i++) {
+        const X = dst[i].x, Y = dst[i].y, u = src[i].x, v = src[i].y;
+        A.push([X, Y, 1, 0, 0, 0, -X * u, -Y * u]); b.push(u);
+        A.push([0, 0, 0, X, Y, 1, -X * v, -Y * v]); b.push(v);
+    }
+    // Gaussian elimination on the 8×8 system
+    for (let c = 0; c < 8; c++) {
+        let piv = c;
+        for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+        [A[c], A[piv]] = [A[piv], A[c]]; [b[c], b[piv]] = [b[piv], b[c]];
+        const d = A[c][c] || 1e-9;
+        for (let r = 0; r < 8; r++) {
+            if (r === c) continue;
+            const f = A[r][c] / d;
+            for (let k = c; k < 8; k++) A[r][k] -= f * A[c][k];
+            b[r] -= f * b[c];
+        }
+    }
+    const h = b.map((v, i) => v / (A[i][i] || 1e-9));
+    return [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1];
+}
+
+function _applyH(H, x, y) {
+    const w = H[6] * x + H[7] * y + H[8];
+    return { x: (H[0] * x + H[1] * y + H[2]) / w, y: (H[3] * x + H[4] * y + H[5]) / w };
+}
+
+// Draw the source image mapped onto a destination triangle via affine transform.
+function _drawTexTriangle(ctx, img, s, d) {
+    const det = s[0].x * (s[1].y - s[2].y) + s[1].x * (s[2].y - s[0].y) + s[2].x * (s[0].y - s[1].y);
+    if (Math.abs(det) < 1e-9) return;
+    const id = 1 / det;
+    const a = id * (d[0].x * (s[1].y - s[2].y) + d[1].x * (s[2].y - s[0].y) + d[2].x * (s[0].y - s[1].y));
+    const b = id * (d[0].y * (s[1].y - s[2].y) + d[1].y * (s[2].y - s[0].y) + d[2].y * (s[0].y - s[1].y));
+    const c = id * (d[0].x * (s[2].x - s[1].x) + d[1].x * (s[0].x - s[2].x) + d[2].x * (s[1].x - s[0].x));
+    const e = id * (d[0].y * (s[2].x - s[1].x) + d[1].y * (s[0].x - s[2].x) + d[2].y * (s[1].x - s[0].x));
+    const f = id * (d[0].x * (s[1].x * s[2].y - s[2].x * s[1].y) + d[1].x * (s[2].x * s[0].y - s[0].x * s[2].y) + d[2].x * (s[0].x * s[1].y - s[1].x * s[0].y));
+    const g = id * (d[0].y * (s[1].x * s[2].y - s[2].x * s[1].y) + d[1].y * (s[2].x * s[0].y - s[0].x * s[2].y) + d[2].y * (s[0].x * s[1].y - s[1].x * s[0].y));
+    // Inflate the clip triangle slightly outward from its centroid so adjacent
+    // triangles overlap by ~0.5px — hides the anti-aliased seams between cells.
+    const cx = (d[0].x + d[1].x + d[2].x) / 3, cy = (d[0].y + d[1].y + d[2].y) / 3;
+    const grow = 0.6;
+    const dd = d.map(p => {
+        const vx = p.x - cx, vy = p.y - cy, len = Math.hypot(vx, vy) || 1;
+        return { x: p.x + (vx / len) * grow, y: p.y + (vy / len) * grow };
+    });
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(dd[0].x, dd[0].y); ctx.lineTo(dd[1].x, dd[1].y); ctx.lineTo(dd[2].x, dd[2].y); ctx.closePath();
+    ctx.clip();
+    ctx.setTransform(a, b, c, e, f, g);
+    ctx.drawImage(img, 0, 0);
+    ctx.restore();
+}
+
+// Crop along the current corners, perspective-flatten to the chosen paper, add to canvas.
+function addVisionToCanvas() {
+    const status = document.getElementById('visionStatusText');
+    if (!canvasEditor || !visionSourceImg || !cropCorners) return;
+    const mm = getSelectedPaperMM();
+
+    try {
+        status.textContent = 'Flattening…'; status.style.color = '#fbbf24';
+        const [tl, tr, br, bl] = cropCorners;
+        const quadW = (Math.hypot(tr.x - tl.x, tr.y - tl.y) + Math.hypot(br.x - bl.x, br.y - bl.y)) / 2;
+        const quadH = (Math.hypot(bl.x - tl.x, bl.y - tl.y) + Math.hypot(br.x - tr.x, br.y - tr.y)) / 2;
+        const landscape = quadW > quadH;
+        const paperW = landscape ? Math.max(mm.w, mm.h) : Math.min(mm.w, mm.h);
+        const paperH = landscape ? Math.min(mm.w, mm.h) : Math.max(mm.w, mm.h);
+
+        // Output raster at ~6 px/mm, capped
+        const maxPx = Math.min(2400, Math.round(Math.max(paperW, paperH) * 6));
+        const outW = Math.round(maxPx * (paperW / Math.max(paperW, paperH)));
+        const outH = Math.round(maxPx * (paperH / Math.max(paperW, paperH)));
+
+        // Homography maps output-rect coords -> source-photo coords
+        const dstRect = [{ x: 0, y: 0 }, { x: outW, y: 0 }, { x: outW, y: outH }, { x: 0, y: outH }];
+        const H = _solveHomography(dstRect, [tl, tr, br, bl]);
+
+        const out = document.createElement('canvas');
+        out.width = outW; out.height = outH;
+        const ctx = out.getContext('2d');
+
+        // Tessellate the output into an N×N grid; affine-map each cell's triangles
+        const N = 24;
+        const grid = [];
+        for (let j = 0; j <= N; j++) {
+            grid[j] = [];
+            for (let i = 0; i <= N; i++) {
+                const dx = (i / N) * outW, dy = (j / N) * outH;
+                grid[j][i] = { d: { x: dx, y: dy }, s: _applyH(H, dx, dy) };
+            }
+        }
+        for (let j = 0; j < N; j++) {
+            for (let i = 0; i < N; i++) {
+                const a = grid[j][i], b = grid[j][i + 1], c = grid[j + 1][i], e = grid[j + 1][i + 1];
+                _drawTexTriangle(ctx, visionSourceImg, [a.s, b.s, c.s], [a.d, b.d, c.d]);
+                _drawTexTriangle(ctx, visionSourceImg, [b.s, e.s, c.s], [b.d, e.d, c.d]);
+            }
+        }
+
+        const flat = new Image();
+        flat.onload = () => {
+            const bedW = canvasEditor.view?.bedW || 960;
+            const bedH = canvasEditor.view?.bedH || 770;
+            const x = (bedW - paperW) / 2, y = (bedH - paperH) / 2;
+            canvasEditor.addImage(flat, x, y, paperW, paperH);
+            log(`Paper cropped & flattened to ${paperW}×${paperH} mm and added to canvas.`, 'success');
+            closeVisionModal();
+        };
+        flat.src = out.toDataURL('image/png');
+    } catch (e) {
+        console.error('addVisionToCanvas:', e);
+        status.textContent = 'Flatten failed — try adjusting the corners.';
+        status.style.color = '#ef4444';
+    }
+}
+
+document.getElementById('visionPaperSize')?.addEventListener('change', (e) => {
+    document.getElementById('visionCustomSize').style.display = e.target.value === 'custom' ? 'flex' : 'none';
+});
+document.getElementById('btnVisionAddToCanvas')?.addEventListener('click', addVisionToCanvas);
 
 function initPeerConnection() {
     const statusText = document.getElementById('visionStatusText');
@@ -1657,7 +2044,14 @@ function initPeerConnection() {
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
                     { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun.cloudflare.com:3478' }
+                    { urls: 'stun:stun.cloudflare.com:3478' },
+                    // Free TURN relay so a phone on 4G/other network can still connect
+                    { urls: 'turn:openrelay.metered.ca:80',
+                      username: 'openrelayproject', credential: 'openrelayproject' },
+                    { urls: 'turn:openrelay.metered.ca:443',
+                      username: 'openrelayproject', credential: 'openrelayproject' },
+                    { urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                      username: 'openrelayproject', credential: 'openrelayproject' }
                 ]
             }
         });
@@ -1691,25 +2085,16 @@ function initPeerConnection() {
                             statusText.textContent = `Receiving photo: ${msg.name}...`;
                             statusText.style.color = "#3b82f6"; // primary accent
                         } else if (msg.type === 'done') {
-                            statusText.textContent = "Photo received! Processing...";
+                            statusText.textContent = "Photo received!";
                             statusText.style.color = "#10b981"; // success green
-                            // Reassemble chunks
+                            // Reassemble chunks and show preview + paper controls
                             const blob = new Blob(chunks, { type: fileMeta.mime || 'image/jpeg' });
-                            
-                            // Inject image to CanvasEditor
                             const img = new Image();
                             img.onload = () => {
-                                if (canvasEditor) {
-                                    const aspect = img.width / img.height;
-                                    const w = 297; // A4 landscape width in mm
-                                    const h = w / aspect;
-                                    const x = (state.bedWidth - w) / 2;
-                                    const y = (state.bedHeight - h) / 2;
-                                    
-                                    canvasEditor.addImage(img, x, y, w, h);
-                                    log('Photo received and injected into canvas background.', 'success');
-                                    closeVisionModal();
-                                }
+                                if (qrContainer) qrContainer.style.display = 'none';
+                                log('Photo received from phone.', 'success');
+                                // Phone may include live-detected page corners (image-natural px, tl,tr,br,bl)
+                                showVisionPreview(img, Array.isArray(fileMeta?.corners) ? fileMeta.corners : null);
                             };
                             img.src = URL.createObjectURL(blob);
                         }
@@ -1749,9 +2134,21 @@ function initPeerConnection() {
 
 document.getElementById('dtVision')?.addEventListener('click', () => {
     if (!visionQrModal) return;
+
+    // Reset popup UI (in case a photo was previewed in a previous session)
+    const qrContainer = document.getElementById('visionQrContainer');
+    document.getElementById('visionCropArea').style.display = 'none';
+    document.getElementById('visionLoupe').style.display = 'none';
+    document.getElementById('btnVisionAddToCanvas').style.display = 'none';
+    document.getElementById('visionCropHint').style.display = 'none';
+    document.getElementById('visionPaperControls').style.display = 'none';
+    if (qrContainer) qrContainer.style.display = 'flex';
+    visionSourceImg = null; cropCorners = null; _activeCorner = -1;
+    _isPanning = false; cropView.z = 1; cropView.ox = 0; cropView.oy = 0;
+
     visionQrModal.classList.remove('hidden');
     setTimeout(() => visionQrModal.classList.add('visible'), 10);
-    
+
     if (!peer) {
         initPeerConnection();
     }
@@ -2746,6 +3143,14 @@ function updateSuctionUI() {
         makeOffBtn.classList.toggle('active', !state.suctionControlEnabled);
     }
 
+    // Sync Make page single suction toggle
+    const suctionToggle = document.getElementById('btnSuctionToggle');
+    if (suctionToggle) {
+        suctionToggle.classList.toggle('active', !!state.suctionControlEnabled);
+        suctionToggle.dataset.on = state.suctionControlEnabled ? 'true' : 'false';
+        suctionToggle.textContent = state.suctionControlEnabled ? 'Suction: On' : 'Suction: Off';
+    }
+
     // Identify active zones based on current mode
     const activeList = getActiveSuctionZones();
 
@@ -2882,16 +3287,16 @@ function initSuctionBed() {
         });
     });
 
-    // On-canvas master vacuum toggle (Prepare tab)
-    const canvasVacBtn = document.getElementById('btnCanvasVacuumToggle');
-    if (canvasVacBtn) {
-        canvasVacBtn.addEventListener('click', () => {
-            state.suctionControlEnabled = !state.suctionControlEnabled;
-            updateSuctionUI();
-            sendSuctionCommands(true, state.suctionControlEnabled);
-            log(`Vacuum ${state.suctionControlEnabled ? 'enabled' : 'disabled'}.`, 'info');
-        });
-    }
+    // Master vacuum toggle — shared handler for the on-canvas (Prepare) and
+    // the Machine Controls (Make) toggle buttons.
+    const toggleVacuum = () => {
+        state.suctionControlEnabled = !state.suctionControlEnabled;
+        updateSuctionUI();
+        sendSuctionCommands(true, state.suctionControlEnabled);
+        log(`Vacuum ${state.suctionControlEnabled ? 'enabled' : 'disabled'}.`, 'info');
+    };
+    document.getElementById('btnCanvasVacuumToggle')?.addEventListener('click', toggleVacuum);
+    document.getElementById('btnSuctionToggle')?.addEventListener('click', toggleVacuum);
 
     // Run the initial UI sync
     updateSuctionUI();
@@ -3456,6 +3861,40 @@ function initJoystick() {
 
 // Initialize joystick
 initJoystick();
+
+// Make right-column resizer — drag the divider to resize Job vs Terminal panes
+(function initSidebarResizer() {
+    const resizer = document.getElementById('sidebarResizer');
+    const jobPane = document.getElementById('jobPane');
+    if (!resizer || !jobPane) return;
+    let dragging = false, startY = 0, startH = 0;
+
+    const onMove = (e) => {
+        if (!dragging) return;
+        const panel = jobPane.parentElement;
+        const dy = e.clientY - startY;
+        const max = Math.max(90, panel.clientHeight - 160); // leave room for terminal
+        const h = Math.max(90, Math.min(startH + dy, max));
+        jobPane.style.flex = '0 0 auto';
+        jobPane.style.height = h + 'px';
+    };
+    const stop = () => {
+        if (!dragging) return;
+        dragging = false;
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+    };
+    resizer.addEventListener('mousedown', (e) => {
+        dragging = true;
+        startY = e.clientY;
+        startH = jobPane.getBoundingClientRect().height;
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'row-resize';
+        e.preventDefault();
+    });
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', stop);
+})();
 
 // Initial mode switch to Prepare
 window.switchMode('prepare');
