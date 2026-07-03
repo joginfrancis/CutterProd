@@ -1530,6 +1530,9 @@ function selectDrawTool(toolName) {
     document.querySelectorAll('.draw-tool-btn').forEach(b => b.classList.remove('active'));
     const btn = document.querySelector(`.draw-tool-btn[data-tool="${toolName}"]`);
     if (btn) btn.classList.add('active');
+    // Eraser radius options are only relevant while the eraser is active
+    const eraserOpts = document.getElementById('eraserOptions');
+    if (eraserOpts) eraserOpts.classList.toggle('hidden', toolName !== 'eraser');
 }
 
 // Wire all palette tool buttons
@@ -1727,6 +1730,8 @@ function detectPageCorners(img, timeoutMs = 9000) {
 
 function showVisionPreview(img, detectedCorners) {
     visionSourceImg = img;
+    const uploadRow = document.getElementById('visionUploadRow');
+    if (uploadRow) uploadRow.style.display = 'none';
     document.getElementById('visionCropArea').style.display = 'block';
     document.getElementById('visionPaperControls').style.display = 'flex';
     document.getElementById('visionCropHint').style.display = 'block';
@@ -1820,19 +1825,28 @@ function _localXY(e) {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
 
+// Nearest corner handle within grab distance of a screen point, or -1.
+function _hitCorner(q, radius = 22) {
+    let nearest = -1, best = Infinity;
+    cropCorners.forEach((c, i) => {
+        const sp = imgToScreen(c);
+        const dist = Math.hypot(sp.x - q.x, sp.y - q.y);
+        if (dist < best) { best = dist; nearest = i; }
+    });
+    return best <= radius ? nearest : -1;
+}
+
 function bindCropPointer() {
     const cv = document.getElementById('visionCropCanvas');
     if (cv._cropBound) return; cv._cropBound = true;
 
     const down = (e) => {
         const q = _localXY(e);
-        // hit-test handles in SCREEN space
-        let nearest = -1, best = Infinity;
-        cropCorners.forEach((c, i) => { const sp = imgToScreen(c); const dist = Math.hypot(sp.x - q.x, sp.y - q.y); if (dist < best) { best = dist; nearest = i; } });
-        if (best <= 22) { _activeCorner = nearest; }
+        const hit = _hitCorner(q);
+        if (hit >= 0) { _activeCorner = hit; }
         else { _isPanning = true; _lastPan = q; cv.style.cursor = 'grabbing'; }
         cv.setPointerCapture(e.pointerId);
-        if (_activeCorner >= 0) updateLoupe();
+        if (_activeCorner >= 0) updateLoupe(_activeCorner);
         e.preventDefault();
     };
     const move = (e) => {
@@ -1841,16 +1855,25 @@ function bindCropPointer() {
             const p = screenToImg(q);
             const nw = visionSourceImg.naturalWidth, nh = visionSourceImg.naturalHeight;
             cropCorners[_activeCorner] = { x: Math.max(0, Math.min(nw, p.x)), y: Math.max(0, Math.min(nh, p.y)) };
-            drawCropOverlay(); updateLoupe(); e.preventDefault();
+            drawCropOverlay(); updateLoupe(_activeCorner); e.preventDefault();
         } else if (_isPanning) {
             cropView.ox += q.x - _lastPan.x; cropView.oy += q.y - _lastPan.y; _lastPan = q;
             clampCropPan(); drawCropOverlay(); e.preventDefault();
+        } else {
+            // Hover: magnify the corner under the pointer WITHOUT moving it,
+            // so an already-perfect corner can be verified before touching it.
+            const hover = _hitCorner(q);
+            if (hover >= 0) { cv.style.cursor = 'pointer'; updateLoupe(hover); }
+            else { cv.style.cursor = 'grab'; document.getElementById('visionLoupe').style.display = 'none'; }
         }
     };
     const up = () => {
         _activeCorner = -1; _isPanning = false; _lastPan = null;
         cv.style.cursor = 'grab';
         document.getElementById('visionLoupe').style.display = 'none';
+    };
+    const leave = () => {
+        if (_activeCorner < 0 && !_isPanning) document.getElementById('visionLoupe').style.display = 'none';
     };
 
     const wheel = (e) => {
@@ -1868,6 +1891,7 @@ function bindCropPointer() {
     cv.addEventListener('pointermove', move);
     cv.addEventListener('pointerup', up);
     cv.addEventListener('pointercancel', up);
+    cv.addEventListener('pointerleave', leave);
     cv.addEventListener('wheel', wheel, { passive: false });
 }
 
@@ -1881,23 +1905,23 @@ function clampCropPan() {
     cropView.oy = Math.min(boxH - margin, Math.max(margin - ih, cropView.oy));
 }
 
-// Magnifier bubble centred on the corner being dragged.
-function updateLoupe() {
-    if (_activeCorner < 0) return;
+// Magnifier bubble centred on a corner (shown on hover to verify, and while dragging).
+function updateLoupe(cornerIdx = _activeCorner) {
+    if (cornerIdx < 0 || !cropCorners) return;
     const loupe = document.getElementById('visionLoupe');
-    const corner = cropCorners[_activeCorner];
+    const corner = cropCorners[cornerIdx];
     const size = 140, Z = 2;
     const ctx = loupe.getContext('2d');
     const s = _vs();
     const halfNat = (size / 2) / (s * Z); // natural px shown each side (tracks current zoom)
 
-    // Corner role for the active handle (cropCorners order = tl, tr, br, bl)
+    // Corner role for the handle (cropCorners order = tl, tr, br, bl)
     const CORNER = [
         { name: 'Top-Left',     hx:  1, vy:  1 },
         { name: 'Top-Right',    hx: -1, vy:  1 },
         { name: 'Bottom-Right', hx: -1, vy: -1 },
         { name: 'Bottom-Left',  hx:  1, vy: -1 },
-    ][_activeCorner] || { name: '', hx: 1, vy: 1 };
+    ][cornerIdx] || { name: '', hx: 1, vy: 1 };
     const cx = size / 2, cy = size / 2, arm = 22;
 
     ctx.clearRect(0, 0, size, size);
@@ -2067,6 +2091,29 @@ document.getElementById('visionPaperSize')?.addEventListener('change', (e) => {
 });
 document.getElementById('btnVisionAddToCanvas')?.addEventListener('click', addVisionToCanvas);
 
+// Upload a saved image straight from the PC (same detect → crop → flatten flow)
+document.getElementById('btnVisionUpload')?.addEventListener('click', () => {
+    document.getElementById('visionUploadInput')?.click();
+});
+document.getElementById('visionUploadInput')?.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    const status = document.getElementById('visionStatusText');
+    const qrContainer = document.getElementById('visionQrContainer');
+    const img = new Image();
+    img.onload = async () => {
+        if (qrContainer) qrContainer.style.display = 'none';
+        log('Image uploaded from PC.', 'success');
+        if (status) { status.textContent = 'Detecting page…'; status.style.color = '#fbbf24'; }
+        let corners = null;
+        try { corners = await detectPageCorners(img); } catch (err) {}
+        showVisionPreview(img, corners);
+    };
+    img.onerror = () => { if (status) { status.textContent = 'Could not read that image file.'; status.style.color = '#ef4444'; } };
+    img.src = URL.createObjectURL(file);
+});
+
 function initPeerConnection() {
     const statusText = document.getElementById('visionStatusText');
     const qrContainer = document.getElementById('visionQrContainer');
@@ -2188,6 +2235,8 @@ document.getElementById('dtVision')?.addEventListener('click', () => {
     document.getElementById('visionCropHint').style.display = 'none';
     document.getElementById('visionPaperControls').style.display = 'none';
     if (qrContainer) qrContainer.style.display = 'flex';
+    const uploadRow = document.getElementById('visionUploadRow');
+    if (uploadRow) uploadRow.style.display = 'flex';
     visionSourceImg = null; cropCorners = null; _activeCorner = -1;
     _isPanning = false; cropView.z = 1; cropView.ox = 0; cropView.oy = 0;
 

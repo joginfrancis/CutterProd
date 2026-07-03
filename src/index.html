@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UrumiCutter V2 - Control Dashboard</title>
-    <link rel="stylesheet" href="styles.css?v=14">
+    <link rel="stylesheet" href="styles.css?v=16">
     <!-- Google Font for Outfit and Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -77,6 +77,18 @@
 
                     <div class="workspace-actions">
                         <input type="file" id="fileInput" accept=".txt,.csv,.gcode,.svg" style="display: none;">
+                        <input type="file" id="drawFileInput" accept=".svg" style="display: none;">
+
+                        <!-- Eraser tool options — only shown while the Eraser tool is active -->
+                        <div class="tool-options hidden" id="eraserOptions">
+                            <label for="drawEraserRadius">Eraser Ø</label>
+                            <input type="number" id="drawEraserRadius" value="5" min="1" max="50" step="1">
+                            <span>mm</span>
+                        </div>
+
+                        <button class="btn btn-action" id="btnDrawImport" title="Import an SVG file">Import</button>
+                        <button class="btn btn-action" id="btnDrawUndo" title="Undo last shape">Undo</button>
+                        <button class="btn btn-action btn-danger-action" id="btnDrawClear" title="Clear all shapes">Clear</button>
                         <button class="btn btn-primary" id="btnSendToCutter">Create Path</button>
                     </div>
                 </div>
@@ -421,11 +433,6 @@
                     </div>
 
                     <div class="form-group-inspector">
-                        <label for="drawEraserRadius">Eraser Radius (mm)</label>
-                        <input type="number" id="drawEraserRadius" value="5" min="1" max="50" step="1">
-                    </div>
-
-                    <div class="form-group-inspector">
                         <label>Cut Layer Profile</label>
                         <div class="method-toggle-container">
                             <button class="method-toggle-btn active" data-value="thru_cut" title="Thru Cut Layer (Blue)">
@@ -434,7 +441,7 @@
                             </button>
                             <button class="method-toggle-btn" data-value="off_base" title="Score / Off Base (Purple)">
                                 <span class="dot-indicator off-base"></span>
-                                Off
+                                Score
                             </button>
                             <button class="method-toggle-btn" data-value="crease" title="Crease / Fold (Yellow)">
                                 <span class="dot-indicator crease"></span>
@@ -449,23 +456,19 @@
                     <div class="palette-grid-actions">
                         <button class="btn btn-action" id="btnDrawGroup">Group</button>
                         <button class="btn btn-action" id="btnDrawUngroup">Ungroup</button>
-                        <button class="btn btn-action" id="btnDrawImport">Import SVG</button>
-                        <button class="btn btn-action" id="btnDrawSkeletonize">Skeletonize</button>
-                        <button class="btn btn-action" id="btnDrawUndo">Undo Shape</button>
-                        <button class="btn btn-action btn-danger-action" id="btnDrawClear">Clear All</button>
+                        <button class="btn btn-action" id="btnDrawSkeletonize" style="grid-column: 1 / -1;">Skeletonize</button>
                     </div>
-
-                    <input type="file" id="drawFileInput" accept=".svg" style="display: none;">
-                    
-                    <button class="btn btn-start" id="btnDrawSend" style="width: 100%; margin-top: 1rem;">
-                        Send to Cutter
-                    </button>
                 </div>
 
                 <!-- SECTION B: Visible when no vector object is selected -->
                 <div class="inspector-section" id="inspectorContextGlobal">
                     <div class="properties-empty-state">
-                        <div class="empty-icon">≡ƒôÉ</div>
+                        <div class="empty-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="40" height="40">
+                                <path d="M2 12l10-10 10 10-10 10z"></path>
+                                <path d="M6 12l1.5 1.5M9 9l1.5 1.5M12 6l1.5 1.5M15 9l1.5 1.5"></path>
+                            </svg>
+                        </div>
                         <div class="empty-title">No Shape Selected</div>
                         <div class="empty-desc">Select an object on the canvas to inspect and edit its properties. Global configuration settings can be adjusted in the Config panel.</div>
                     </div>
@@ -615,28 +618,49 @@
 
     <!-- VISION: phone-camera capture over WebRTC (PeerJS) -->
     <div id="visionQrModal" class="modal-overlay hidden">
-        <div class="modal-content glass-panel" style="width: 360px;">
+        <div class="modal-content glass-panel vision-modal">
             <div class="modal-header">
-                <h2>Vision — Phone Camera</h2>
+                <h2>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="vision-title-icon">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                        <circle cx="12" cy="13" r="4"></circle>
+                    </svg>
+                    Vision Capture
+                </h2>
                 <button id="btnCloseVisionModal" class="btn-icon">&times;</button>
             </div>
-            <div class="modal-body" style="display:flex; flex-direction:column; align-items:center; gap:1rem; text-align:center;">
-                <p style="font-size:0.85rem; color:var(--text-muted); margin:0;">
-                    Scan with your phone to open the camera. The photo is sent straight
-                    into this canvas over a direct peer-to-peer link.
+            <div class="modal-body vision-body">
+                <p class="vision-sub">
+                    Scan with your phone — the photo streams straight into this canvas
+                    over a direct peer-to-peer link.
                 </p>
-                <div id="visionQrContainer" style="min-height:180px; display:flex; align-items:center; justify-content:center;"></div>
-                <div id="visionCropArea" style="display:none; position:relative; width:100%; touch-action:none; user-select:none; -webkit-user-select:none;">
-                    <canvas id="visionCropCanvas" style="display:block; width:100%; touch-action:none; cursor:grab; border-radius:8px; background:#1a1a1a;"></canvas>
-                    <canvas id="visionLoupe" width="140" height="140" style="position:absolute; display:none; width:140px; height:140px; border-radius:50%; pointer-events:none; border:3px solid #fff; box-shadow:0 3px 14px rgba(0,0,0,0.45); z-index:5;"></canvas>
+                <div id="visionQrContainer" class="vision-qr"></div>
+
+                <!-- Or upload a saved image straight from the PC -->
+                <div id="visionUploadRow" class="vision-upload-row">
+                    <div class="vision-divider"><span>or</span></div>
+                    <button id="btnVisionUpload" class="vision-upload-btn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        Upload image from PC
+                    </button>
+                    <input type="file" id="visionUploadInput" accept="image/*" style="display:none;">
                 </div>
-                <p id="visionStatusText" style="font-size:0.85rem; font-weight:500; margin:0;">Starting…</p>
+
+                <div id="visionCropArea" class="vision-crop-area">
+                    <canvas id="visionCropCanvas"></canvas>
+                    <canvas id="visionLoupe" width="140" height="140"></canvas>
+                </div>
+                <p id="visionStatusText" class="vision-status">Starting…</p>
 
                 <!-- Paper-size normalisation controls (shown once a photo arrives) -->
-                <div id="visionPaperControls" style="display:none; width:100%; flex-direction:column; gap:0.5rem;">
-                    <label style="font-size:0.8rem; color:var(--text-muted); display:flex; align-items:center; gap:0.5rem; justify-content:space-between;">
+                <div id="visionPaperControls" class="vision-paper-controls">
+                    <label>
                         <span>Paper size</span>
-                        <select id="visionPaperSize" style="flex:1; max-width:60%; padding:0.35rem; border-radius:6px; border:1px solid var(--border);">
+                        <select id="visionPaperSize">
                             <option value="A4">A4 — 210 × 297 mm</option>
                             <option value="A3">A3 — 297 × 420 mm</option>
                             <option value="A5">A5 — 148 × 210 mm</option>
@@ -644,14 +668,14 @@
                             <option value="custom">Custom…</option>
                         </select>
                     </label>
-                    <div id="visionCustomSize" style="display:none; gap:0.4rem; align-items:center; justify-content:flex-end; font-size:0.8rem; color:var(--text-muted);">
-                        <input type="number" id="visionPaperW" value="210" min="10" step="1" style="width:64px; padding:0.3rem; border-radius:6px; border:1px solid var(--border);"> ×
-                        <input type="number" id="visionPaperH" value="297" min="10" step="1" style="width:64px; padding:0.3rem; border-radius:6px; border:1px solid var(--border);"> mm
+                    <div id="visionCustomSize" class="vision-custom-size">
+                        <input type="number" id="visionPaperW" value="210" min="10" step="1"> ×
+                        <input type="number" id="visionPaperH" value="297" min="10" step="1"> mm
                     </div>
                 </div>
 
-                <p id="visionCropHint" style="display:none; font-size:0.72rem; color:var(--text-muted); margin:0;">Scroll to zoom · drag the image to pan · drag a corner to the paper edge.</p>
-                <button id="btnVisionAddToCanvas" class="btn-primary" style="display:none; width:100%;">Crop, Flatten &amp; Add to Canvas</button>
+                <p id="visionCropHint" class="vision-hint">Scroll to zoom · drag the image to pan · hover a corner to inspect, drag to adjust.</p>
+                <button id="btnVisionAddToCanvas" class="vision-cta">Crop, Flatten &amp; Add to Canvas</button>
             </div>
         </div>
     </div>
@@ -659,7 +683,7 @@
     <!-- SCRIPTS -->
     <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="trace_skeleton.js"></script>
-    <script type="module" src="script.js?v=25"></script>
+    <script type="module" src="script.js?v=28"></script>
 
 </body>
 </html>
