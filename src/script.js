@@ -36,7 +36,7 @@ import { MachineConnection } from './Connection.js';
 import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
-import { CanvasEditor } from './CanvasEditor.js?v=5';
+import { CanvasEditor } from './CanvasEditor.js?v=6';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -1686,6 +1686,45 @@ let _lastPan      = null;
 // view: screenPx = imgPx * (baseScale * z) + offset
 const cropView = { z: 1, ox: 0, oy: 0, baseScale: 1, boxW: 0, boxH: 0 };
 
+// ── PC-side page detector: OpenCV GrabCut in a Web Worker, pre-fills cropper corners ──
+let _detWorker = null, _detSeq = 0;
+const _detPending = {};
+function getDetectWorker() {
+    if (_detWorker) return _detWorker;
+    try {
+        _detWorker = new Worker('vision-detect-worker.js');
+        _detWorker.onmessage = (e) => {
+            const m = e.data;
+            if (m.type === 'result' && _detPending[m.id]) { _detPending[m.id](m); delete _detPending[m.id]; }
+        };
+        _detWorker.onerror = () => { _detWorker = null; };
+    } catch (e) { _detWorker = null; }
+    return _detWorker;
+}
+// Returns Promise<[{x,y}×4] in image-natural px> or null. Detection runs off-thread.
+function detectPageCorners(img, timeoutMs = 9000) {
+    return new Promise((resolve) => {
+        const wk = getDetectWorker();
+        if (!wk) return resolve(null);
+        const procW = 320, nw = img.naturalWidth, nh = img.naturalHeight;
+        const ph = Math.max(1, Math.round(procW * nh / nw));
+        const c = document.createElement('canvas'); c.width = procW; c.height = ph;
+        const cx = c.getContext('2d', { willReadFrequently: true });
+        cx.drawImage(img, 0, 0, procW, ph);
+        const imgData = cx.getImageData(0, 0, procW, ph);
+        const id = ++_detSeq;
+        let done = false;
+        const finish = (v) => { if (!done) { done = true; resolve(v); } };
+        _detPending[id] = (m) => {
+            if (!m.valid || !m.quad) return finish(null);
+            const sx = nw / procW, sy = nh / ph;
+            finish(m.quad.map(p => ({ x: Math.max(0, Math.min(nw, p[0]*sx)), y: Math.max(0, Math.min(nh, p[1]*sy)) })));
+        };
+        setTimeout(() => { delete _detPending[id]; finish(null); }, timeoutMs);
+        wk.postMessage({ id, data: imgData.data.buffer, w: procW, h: ph }, [imgData.data.buffer]);
+    });
+}
+
 function showVisionPreview(img, detectedCorners) {
     visionSourceImg = img;
     document.getElementById('visionCropArea').style.display = 'block';
@@ -1975,8 +2014,8 @@ function addVisionToCanvas() {
         const paperW = landscape ? Math.max(mm.w, mm.h) : Math.min(mm.w, mm.h);
         const paperH = landscape ? Math.min(mm.w, mm.h) : Math.max(mm.w, mm.h);
 
-        // Output raster at ~6 px/mm, capped
-        const maxPx = Math.min(2400, Math.round(Math.max(paperW, paperH) * 6));
+        // Output raster at ~10 px/mm (~254 DPI), capped
+        const maxPx = Math.min(3600, Math.round(Math.max(paperW, paperH) * 10));
         const outW = Math.round(maxPx * (paperW / Math.max(paperW, paperH)));
         const outH = Math.round(maxPx * (paperH / Math.max(paperW, paperH)));
 
@@ -2090,11 +2129,17 @@ function initPeerConnection() {
                             // Reassemble chunks and show preview + paper controls
                             const blob = new Blob(chunks, { type: fileMeta.mime || 'image/jpeg' });
                             const img = new Image();
-                            img.onload = () => {
+                            img.onload = async () => {
                                 if (qrContainer) qrContainer.style.display = 'none';
                                 log('Photo received from phone.', 'success');
-                                // Phone may include live-detected page corners (image-natural px, tl,tr,br,bl)
-                                showVisionPreview(img, Array.isArray(fileMeta?.corners) ? fileMeta.corners : null);
+                                statusText.textContent = 'Detecting page…';
+                                statusText.style.color = '#fbbf24';
+                                // Accurate detection on the PC (OpenCV GrabCut, off-thread)
+                                let corners = null;
+                                try { corners = await detectPageCorners(img); } catch (e) {}
+                                // Fall back to phone-sent corners, else the cropper's default rectangle
+                                if (!corners && Array.isArray(fileMeta?.corners)) corners = fileMeta.corners;
+                                showVisionPreview(img, corners);
                             };
                             img.src = URL.createObjectURL(blob);
                         }
@@ -2152,6 +2197,7 @@ document.getElementById('dtVision')?.addEventListener('click', () => {
     if (!peer) {
         initPeerConnection();
     }
+    getDetectWorker(); // preload OpenCV detector while the user scans/captures
 });
 
 // Load G-Code / Trajectory trigger
@@ -3576,6 +3622,13 @@ function updatePropertiesInspector() {
             document.querySelectorAll('.method-toggle-btn').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.value === method);
             });
+
+            // Bounding-box size chip (mm)
+            const sizeChip = document.getElementById('inspectorSizeChip');
+            if (sizeChip && canvasEditor.getSelectionBounds) {
+                const b = canvasEditor.getSelectionBounds();
+                sizeChip.textContent = b ? `${b.w.toFixed(1)} × ${b.h.toFixed(1)} mm` : '— × — mm';
+            }
         }
     } else {
         if (inspectorPanel) inspectorPanel.classList.add('collapsed');

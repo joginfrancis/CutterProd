@@ -67,6 +67,29 @@ Note: the extreme-point detector is accurate when the page fills the frame (veri
 ~1px on synthetic input); it needs on-device tuning for cluttered backgrounds. Upgrade
 path = trimmed OpenCV.js (core+imgproc, ~1–2 MB) in the worker if needed.
 
+### PC-side auto page detection (GrabCut worker) — IMPLEMENTED
+When a photo arrives, the PC runs page detection in `vision-detect-worker.js` (a Web
+Worker, so the UI never freezes) and pre-fills the cropper corners.
+
+Pipeline (validated on 11 real photos: dark book, white A4 on wood, glossy brochures,
+pages on dark carpet, various rotations):
+1. OpenCV **GrabCut**, seeded with the centre ~80% rect (the "page fills the frame"
+   assumption) → foreground mask. Robust to busy covers / weak edges / any colour.
+2. Largest contour → **convex hull → 4-corner approx** (rough perspective quad).
+3. **Edge-line refinement**: split the contour into 4 edges, PCA-fit a line to each,
+   intersect adjacent lines → sharp sub-pixel corners.
+4. **Geometric validation**: area ≥ 15% of frame, every corner 60–120°, aspect 1.0–2.3.
+   Fails any gate → returns null (no faulty quad).
+
+Wiring (`script.js`): `getDetectWorker()` lazy-loads the worker (preloaded when the
+Vision modal opens so OpenCV is ready by capture time). `detectPageCorners(img)` posts
+a 320px frame, maps the returned corners to image-natural px, and the photo-received
+handler passes them to `showVisionPreview(img, corners)` → cropper opens pre-snapped
+("Page auto-detected"). Falls back to phone-sent corners, then the default rectangle.
+
+OpenCV.js (~8 MB) is loaded only inside the worker, only when Vision is used — it never
+touches app startup or the main thread.
+
 ### Planned: computer-vision auto edge-snap — superseded by the above for the phone
 Goal: auto-place the 4 corners (and let a dragged corner "snap" to the nearest real
 edge), without the OpenCV freeze. Approach:

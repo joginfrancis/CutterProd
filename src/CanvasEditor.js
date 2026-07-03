@@ -356,6 +356,9 @@ export class CanvasEditor {
         // Eraser cursor radius in mm
         this.eraserRadius = 5;
 
+        // Measurement tool: { start:{x,y}, end:{x,y} } in machine mm
+        this._measure = null;
+
         // Bind events
         this._onDown   = this._onDown.bind(this);
         this._onMove   = this._onMove.bind(this);
@@ -400,6 +403,7 @@ export class CanvasEditor {
         this._marqueeStart = null;
         this._marqueeEnd = null;
         if (tool !== 'select') this._sel = [];
+        if (tool !== 'measure') this._measure = null;
         this.canvas.style.cursor = this._cursorForTool();
         this.draw();
     }
@@ -591,6 +595,12 @@ export class CanvasEditor {
 
         // Drawing tools always draw — users use the Select tool (V key) to select shapes.
 
+        if (this.tool === 'measure') {
+            this._measure = { start: { x: mc.x, y: mc.y }, end: { x: mc.x, y: mc.y } };
+            this.draw();
+            return;
+        }
+
         if (this.tool === 'select') {
             const handle = this._getHandleAt(m.x, m.y, 8 / this.view.scale);
             if (handle) {
@@ -677,6 +687,12 @@ export class CanvasEditor {
         }
         const m  = this._eventPos(e);
         const mc = this._clamp(m.x, m.y);
+
+        if (this.tool === 'measure' && this._measure) {
+            this._measure.end = { x: mc.x, y: mc.y };
+            this.draw();
+            return;
+        }
 
         if (this.tool === 'select') {
             if (this._resizeHandle) {
@@ -798,6 +814,8 @@ export class CanvasEditor {
 
         if (!this._isDown) return;
         this._isDown = false;
+
+        if (this.tool === 'measure') { this.draw(); return; }
 
         if (this.tool === 'select') {
             if (this._resizeHandle) {
@@ -1061,7 +1079,44 @@ export class CanvasEditor {
             ctx.restore();
         }
         
+        // ── Measurement overlay ────────────────────────────────────────────
+        if (this.tool === 'measure' && this._measure) {
+            const s = this._measure.start, e = this._measure.end;
+            const x1 = mapX(s.x), y1 = mapY(s.y), x2 = mapX(e.x), y2 = mapY(e.y);
+            const dist = Math.hypot(e.x - s.x, e.y - s.y);
+            ctx.save();
+            ctx.strokeStyle = '#2563eb'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]);
+            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+            ctx.setLineDash([]);
+            [[x1, y1], [x2, y2]].forEach(([x, y]) => {
+                ctx.beginPath(); ctx.arc(x, y, 4, 0, 2 * Math.PI);
+                ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#2563eb'; ctx.lineWidth = 2; ctx.stroke();
+            });
+            // distance pill at midpoint
+            const midX = (x1 + x2) / 2, midY = (y1 + y2) / 2;
+            const label = dist.toFixed(1) + ' mm';
+            ctx.font = '600 12px ui-monospace, monospace';
+            const tw = ctx.measureText(label).width, pad = 6, bh = 20;
+            const bx = midX - tw / 2 - pad, by = midY - bh / 2;
+            ctx.fillStyle = '#2563eb';
+            if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, by, tw + pad * 2, bh, 6); ctx.fill(); }
+            else ctx.fillRect(bx, by, tw + pad * 2, bh);
+            ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(label, midX, midY);
+            ctx.restore();
+        }
+
         ctx.restore(); // Restore from bed boundaries clipping
+    }
+
+    // Union bounding box (machine mm) of the current selection, or null.
+    getSelectionBounds() {
+        if (!this._sel || this._sel.length === 0) return null;
+        const sel = this.shapes.filter(s => this._sel.includes(s.id));
+        if (sel.length === 0) return null;
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        sel.forEach(s => { const b = shapeBBox(s); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); });
+        return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
     }
 
     _drawShape(ctx, shape, mapX, mapY, scale, selected, isDraft) {

@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UrumiCutter V2 - Control Dashboard</title>
-    <link rel="stylesheet" href="styles.css?v=13">
+    <link rel="stylesheet" href="styles.css?v=14">
     <!-- Google Font for Outfit and Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -131,6 +131,13 @@
                                     <path d="M6.5 17.5l4-4"></path>
                                 </svg>
                                 Eraser
+                            </button>
+                            <button class="draw-tool-btn" id="dtMeasure" data-tool="measure" title="Measure distance (M)">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M2 12l10-10 10 10-10 10z"></path>
+                                    <path d="M6 12l1.5 1.5M9 9l1.5 1.5M12 6l1.5 1.5M15 9l1.5 1.5"></path>
+                                </svg>
+                                Measure
                             </button>
 
                             <div class="draw-tool-divider"></div>
@@ -401,7 +408,10 @@
                 <!-- SECTION A: Context Sensitive - Visible when object is selected in DRAW TAB -->
                 <div class="inspector-section hidden" id="inspectorContextDraw">
                     <div class="form-group-inspector">
-                        <label>Object Type</label>
+                        <label style="display:flex; align-items:center; justify-content:space-between;">
+                            <span>Object Type</span>
+                            <span class="size-chip" id="inspectorSizeChip" title="Bounding box (width × height)">— × — mm</span>
+                        </label>
                         <div class="read-only-text" id="inspectorObjectType">Rectangle</div>
                     </div>
                     
@@ -649,7 +659,7 @@
     <!-- SCRIPTS -->
     <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="trace_skeleton.js"></script>
-    <script type="module" src="script.js?v=22"></script>
+    <script type="module" src="script.js?v=25"></script>
 
 </body>
 </html>

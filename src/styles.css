@@ -2638,6 +2638,20 @@ body .btn-action { /* Specificity override */
     display: none !important;
 }
 
+/* Bounding-box size chip in the properties inspector */
+.size-chip {
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-glow);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    border-radius: 999px;
+    padding: 0.1rem 0.5rem;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+}
+
 /* ============================================================
    URUMI MAKE TAB ENHANCEMENTS: HUDs, JOYSTICK & SIDEBAR TABS
    ============================================================ */
