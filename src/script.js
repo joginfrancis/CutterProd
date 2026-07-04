@@ -36,7 +36,7 @@ import { MachineConnection } from './Connection.js';
 import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
-import { CanvasEditor } from './CanvasEditor.js?v=11';
+import { CanvasEditor } from './CanvasEditor.js?v=12';
 import { analyzeDrawing, buildSVG } from './DrawingVectorizer.js?v=4';
 import { packMicrosegment } from './BinaryUtils.js';
 
@@ -2069,30 +2069,6 @@ function flattenCroppedPage() {
     return { out, paperW, paperH };
 }
 
-function addVisionToCanvas() {
-    if (!canvasEditor) return;
-    const pill = document.getElementById('visionCropStatus');
-    try {
-        if (pill) { pill.textContent = 'Flattening…'; pill.style.color = '#fbbf24'; }
-        const res = flattenCroppedPage();
-        if (!res) return;
-        const { out, paperW, paperH } = res;
-        const flat = new Image();
-        flat.onload = () => {
-            const bedW = canvasEditor.view?.bedW || 960;
-            const bedH = canvasEditor.view?.bedH || 770;
-            const x = (bedW - paperW) / 2, y = (bedH - paperH) / 2;
-            canvasEditor.addImage(flat, x, y, paperW, paperH);
-            log(`Paper cropped & flattened to ${paperW}×${paperH} mm and added to canvas.`, 'success');
-            closeVisionModal();
-        };
-        flat.src = out.toDataURL('image/png');
-    } catch (e) {
-        console.error('addVisionToCanvas:', e);
-        if (pill) { pill.textContent = 'Flatten failed — adjust the corners.'; pill.style.color = '#ef4444'; }
-    }
-}
-
 // ── Extract Drawing: vectorize the flattened page, grouped by ink color ──────
 let _extractResult = null;
 let _extractFlat = null; // { out:<canvas>, paperW, paperH } — flattened page for reference underlay
@@ -2177,10 +2153,15 @@ function applyExtractedLayers() {
         const bedW = canvasEditor.view?.bedW || 960;
         const bedH = canvasEditor.view?.bedH || 770;
         const { out, paperW, paperH } = _extractFlat;
+        // Align the underlay to the exact rectangle importSVG placed the vectors in
+        const box = canvasEditor._lastImportBox;
         const ref = new Image();
         ref.onload = () => {
-            const x = (bedW - paperW) / 2, y = (bedH - paperH) / 2;
-            canvasEditor.addImage(ref, x, y, paperW, paperH, { opacity: 0.25, background: true, name: 'Reference (flattened)' });
+            const x = box ? box.x : (bedW - paperW) / 2;
+            const y = box ? box.y : (bedH - paperH) / 2;
+            const w = box ? box.w : paperW;
+            const h = box ? box.h : paperH;
+            canvasEditor.addImage(ref, x, y, w, h, { opacity: 0.25, background: true, name: 'Reference (flattened)' });
         };
         ref.src = out.toDataURL('image/png');
     }
@@ -2193,7 +2174,6 @@ function applyExtractedLayers() {
 document.getElementById('visionPaperSize')?.addEventListener('change', (e) => {
     document.getElementById('visionCustomSize').style.display = e.target.value === 'custom' ? 'flex' : 'none';
 });
-document.getElementById('btnVisionAddToCanvas')?.addEventListener('click', addVisionToCanvas);
 document.getElementById('btnVisionExtract')?.addEventListener('click', runExtractDrawing);
 document.getElementById('btnVepApply')?.addEventListener('click', applyExtractedLayers);
 document.getElementById('btnVepBack')?.addEventListener('click', () => {

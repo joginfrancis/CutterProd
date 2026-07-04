@@ -1472,6 +1472,16 @@ ${elements}
             const fx = x => bedW - tx(x);
             const fy = y => bedH - ty(y); // Flip Y to Machine coordinates
 
+            // Record the placed page rectangle (machine mm) so callers can align an
+            // underlay image exactly with the imported vectors, even after auto-fit.
+            {
+                const cxA = fx(0), cxB = fx(vbW), cyA = fy(0), cyB = fy(vbH);
+                this._lastImportBox = {
+                    x: Math.min(cxA, cxB), y: Math.min(cyA, cyB),
+                    w: Math.abs(cxB - cxA), h: Math.abs(cyB - cyA),
+                };
+            }
+
             // Use SvgConverter's robust parser to flatten all paths
             const converter = new SvgConverter();
 
