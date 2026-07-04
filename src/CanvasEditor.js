@@ -1345,9 +1345,10 @@ ${elements}
                 const w_mm = parseToMM(wAttr) || bedW;
                 const h_mm = parseToMM(hAttr) || bedH;
                 const vbAttr = svg.getAttribute('viewBox');
+                let vb = null;
 
                 if (vbAttr) {
-                    const vb = vbAttr.split(/[\s,]+/).map(parseFloat);
+                    vb = vbAttr.split(/[\s,]+/).map(parseFloat);
                     if (vb.length === 4) {
                         vbW = vb[2];
                         vbH = vb[3];
@@ -1375,8 +1376,8 @@ ${elements}
                 offsetX = (bedW - (vbW * scale)) / 2;
                 offsetY = (bedH - (vbH * scale)) / 2;
 
-                const vbMinX = vbAttr && vb.length === 4 ? vb[0] : 0;
-                const vbMinY = vbAttr && vb.length === 4 ? vb[1] : 0;
+                const vbMinX = vb && vb.length === 4 ? vb[0] : 0;
+                const vbMinY = vb && vb.length === 4 ? vb[1] : 0;
                 offsetX = offsetX - (vbMinX * scale);
                 offsetY = offsetY - (vbMinY * scale);
             }

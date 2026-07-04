@@ -1,7 +1,12 @@
 # Plan: Hand-drawing photo → color-grouped machine toolpath
 
 Date: 2026-07-04
-Status: PLANNED
+Status: IMPLEMENTED (v1) — `src/DrawingVectorizer.js` + Vision modal "Extract Drawing"
+  flow. Verified end-to-end on a real drawing (blue cat + red rect + green cross):
+  flatten → Lab ink separation → adaptive color clustering → per-color skeleton →
+  RDP simplify + Catmull-Rom smoothing → color→operation mapping UI → method-tagged
+  paths on the Design canvas, ready for Create Path.
+  Also fixed a latent importSVG bug (`vb` out-of-scope) that broke all viewBox SVG imports.
 
 ## Goal
 Photograph a hand drawing on the machine bed → flatten the A4 (DONE) → extract the
@@ -24,16 +29,54 @@ grouped into layers, then executed on the machine.
 
 Input: the flattened A4 raster (`ImageData`) + its mm dimensions.
 
-### Stage 1 — Ink/paper separation
-- Downscale-free on the flattened raster (use the higher-DPI flatten, see Prep).
-- Per pixel: compute HSL. Paper = high L + low S → background. Ink = everything else.
-- Produce an **ink mask** (binary).
+### Stage 1 — Ink/substrate separation (substrate-agnostic)
+**Constraint:** the substrate can be any size (A4/A3/custom — already user-selected in the
+crop UI) AND any material/color: white paper, colored paper, cardboard, etc. So we CANNOT
+assume "paper = white / bright". Ink is separated *relative to the estimated substrate color*,
+not against white.
 
-### Stage 2 — Color segmentation
-- For each ink pixel, classify hue into buckets: **red / green / blue / black(neutral)**
-  (reuse `classifyHsl` from archive). Neighborhood ink-color sampling to fight anti-alias
-  fringing (reuse `getNeighborhoodInkColor`).
-- Emit one binary mask **per color class**.
+- **Estimate the substrate color** from the flattened page itself (drawing occupies the
+  center; the substrate dominates by area and rings the border):
+  - Sample a border frame (outer ~8% ring) + take the **statistical mode / median** of the
+    whole page in Lab space → `bgLab`. Border sampling is robust because drawings rarely run
+    to the paper edge; the mode is robust even if they do.
+- **Ink mask** = pixels whose color distance from `bgLab` exceeds a threshold
+  (**CIE Lab ΔE**, perceptually uniform — handles colored substrates far better than HSL-L).
+  - Adaptive threshold: derive from the spread (std-dev) of background samples so a textured
+    cardboard doesn't get over-segmented.
+- Optional **white-balance normalize** using `bgLab` as the neutral reference to reduce hue
+  cast from colored paper / warm lighting before color classification (Stage 2). Apply
+  cautiously — skip if it distorts genuine ink hues.
+
+### Stage 1b — Substrate/ink contrast guard
+- If a drawing color is too close to the substrate (e.g. red marker on red paper), that color
+  will have weak/empty separation. Detect low-contrast color classes and **warn the user**
+  ("green strokes low contrast on this substrate") rather than emitting garbage paths.
+
+### Stage 2 — Color segmentation (data-driven, arbitrary palette, unknown count)
+**Constraint:** pens can be any of many colors — red, green, orange, blue, pink, yellow,
+purple, brown, black … and only *some* are used in any given drawing. We must NOT assume a
+fixed set or a fixed count. The number and identity of colors is discovered from the image.
+
+- **Cluster the ink pixels in Lab space with an ADAPTIVE cluster count** — do not fix `k`:
+  1. Over-cluster (k-means with a generous k, e.g. 8–12) OR build a Lab histogram of ink
+     pixels and find peaks.
+  2. **Agglomeratively merge** clusters whose centroids are within a perceptual threshold
+     (**ΔE ≈ 10–15**) — near-identical shades collapse into one real pen color.
+  3. **Drop tiny clusters** (below a min pixel-count / stroke-length) as noise/fringing.
+  → Result: exactly the colors actually present, whether that's 2 or 8. Pink vs red vs
+     orange stay separate because their centroids are > ΔE apart; two shades of the same blue
+     marker merge.
+- **Light/low-chroma inks (yellow, orange) are the hard case**: they sit close to a white
+  substrate, so Stage-1 ΔE separation is weak → they may be under-detected on white paper.
+  Mitigations: (a) lower the ink threshold adaptively for high-hue-chroma-but-low-lightness-
+  delta pixels; (b) surface them via the Stage 1b low-contrast warning; (c) they separate
+  cleanly on colored/dark substrate.
+- **Display naming (cosmetic only):** snap each detected cluster centroid to the nearest name
+  in a reference palette (red/orange/yellow/green/blue/pink/purple/brown/black/…) purely for
+  the UI swatch label. Masking always uses the *measured* centroid color, never the snapped
+  name — so an unusual teal or magenta still works, just labeled "nearest = blue/pink".
+- Emit one binary mask **per discovered color cluster**.
 
 ### Stage 3 — Vectorization per color
 - For each color mask → **skeletonize** (TraceSkeleton) → centerline polylines.
@@ -59,9 +102,13 @@ Input: the flattened A4 raster (`ImageData`) + its mm dimensions.
 
 ## UI
 - New button in the Vision crop footer (or a post-flatten step): **"Extract Drawing"**.
-- After extraction, show the color→operation mapping panel (chips per detected color +
-  dropdown to reassign), a preview overlay, and **Add layers to canvas**.
-- Reversible: user can re-run with different thresholds.
+- After extraction, show the color→operation mapping panel — a **dynamic list of only the
+  colors actually detected** (each shown as a real-color swatch + its nearest-name label +
+  stroke count), each with a dropdown to assign an operation (Cut / Crease / Draw / Off-base /
+  Ignore). No fixed palette rows; the list length equals the number of discovered colors.
+- Preview overlay tints each color's strokes by its assigned operation; **Add layers to canvas**.
+- Reversible: user can re-run with different sensitivity (merge-ΔE / min-stroke thresholds)
+  if two markers merged or a faint color was missed.
 
 ## Prep dependency (from prior discussion)
 - Bump flatten to **~300 DPI** and raise the px cap; increase warp tessellation `N`.
@@ -83,3 +130,11 @@ Input: the flattened A4 raster (`ImageData`) + its mm dimensions.
   handle most; expose thresholds if needed.
 - **Closed vs open paths**: crease/cut usually want closed loops; detect loop closure and
   snap endpoints within a tolerance.
+- **Substrate size**: A4/A3/custom is already user-selected in the crop UI and drives the mm
+  scale of the flatten — no change needed for the vectorizer; it works in the flattened
+  page's own pixel/mm space.
+- **Substrate detection vs bed**: a colored sheet on a similar-colored bed can defeat
+  auto corner-detection (GrabCut). The existing **manual 4-corner cropper is the fallback**;
+  keep it prominent. Optionally calibrate the known bed color to improve auto-detect.
+- **Ink==substrate color**: unavoidable physical limitation; handle via the Stage 1b
+  low-contrast warning, not by trying to invent strokes that aren't separable.

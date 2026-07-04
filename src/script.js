@@ -36,7 +36,8 @@ import { MachineConnection } from './Connection.js';
 import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
-import { CanvasEditor } from './CanvasEditor.js?v=7';
+import { CanvasEditor } from './CanvasEditor.js?v=8';
+import { analyzeDrawing, buildSVG } from './DrawingVectorizer.js?v=2';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -2025,51 +2026,57 @@ function _drawTexTriangle(ctx, img, s, d) {
 }
 
 // Crop along the current corners, perspective-flatten to the chosen paper, add to canvas.
-function addVisionToCanvas() {
-    const status = document.getElementById('visionStatusText');
-    if (!canvasEditor || !visionSourceImg || !cropCorners) return;
+// Crop + perspective-flatten the selected quad into an off-screen raster.
+// Returns { out:<canvas>, paperW, paperH } in mm, or null on failure.
+function flattenCroppedPage() {
+    if (!visionSourceImg || !cropCorners) return null;
     const mm = getSelectedPaperMM();
+    const [tl, tr, br, bl] = cropCorners;
+    const quadW = (Math.hypot(tr.x - tl.x, tr.y - tl.y) + Math.hypot(br.x - bl.x, br.y - bl.y)) / 2;
+    const quadH = (Math.hypot(bl.x - tl.x, bl.y - tl.y) + Math.hypot(br.x - tr.x, br.y - tr.y)) / 2;
+    const landscape = quadW > quadH;
+    const paperW = landscape ? Math.max(mm.w, mm.h) : Math.min(mm.w, mm.h);
+    const paperH = landscape ? Math.min(mm.w, mm.h) : Math.max(mm.w, mm.h);
 
+    // Output raster ~12 px/mm (~305 DPI), capped — higher DPI = cleaner vectorization
+    const maxPx = Math.min(4200, Math.round(Math.max(paperW, paperH) * 12));
+    const outW = Math.round(maxPx * (paperW / Math.max(paperW, paperH)));
+    const outH = Math.round(maxPx * (paperH / Math.max(paperW, paperH)));
+
+    const dstRect = [{ x: 0, y: 0 }, { x: outW, y: 0 }, { x: outW, y: outH }, { x: 0, y: outH }];
+    const H = _solveHomography(dstRect, [tl, tr, br, bl]);
+
+    const out = document.createElement('canvas');
+    out.width = outW; out.height = outH;
+    const ctx = out.getContext('2d');
+
+    const N = 32; // finer tessellation → less warp softening
+    const grid = [];
+    for (let j = 0; j <= N; j++) {
+        grid[j] = [];
+        for (let i = 0; i <= N; i++) {
+            const dx = (i / N) * outW, dy = (j / N) * outH;
+            grid[j][i] = { d: { x: dx, y: dy }, s: _applyH(H, dx, dy) };
+        }
+    }
+    for (let j = 0; j < N; j++) {
+        for (let i = 0; i < N; i++) {
+            const a = grid[j][i], b = grid[j][i + 1], c = grid[j + 1][i], e = grid[j + 1][i + 1];
+            _drawTexTriangle(ctx, visionSourceImg, [a.s, b.s, c.s], [a.d, b.d, c.d]);
+            _drawTexTriangle(ctx, visionSourceImg, [b.s, e.s, c.s], [b.d, e.d, c.d]);
+        }
+    }
+    return { out, paperW, paperH };
+}
+
+function addVisionToCanvas() {
+    if (!canvasEditor) return;
+    const pill = document.getElementById('visionCropStatus');
     try {
-        status.textContent = 'Flattening…'; status.style.color = '#fbbf24';
-        const [tl, tr, br, bl] = cropCorners;
-        const quadW = (Math.hypot(tr.x - tl.x, tr.y - tl.y) + Math.hypot(br.x - bl.x, br.y - bl.y)) / 2;
-        const quadH = (Math.hypot(bl.x - tl.x, bl.y - tl.y) + Math.hypot(br.x - tr.x, br.y - tr.y)) / 2;
-        const landscape = quadW > quadH;
-        const paperW = landscape ? Math.max(mm.w, mm.h) : Math.min(mm.w, mm.h);
-        const paperH = landscape ? Math.min(mm.w, mm.h) : Math.max(mm.w, mm.h);
-
-        // Output raster at ~10 px/mm (~254 DPI), capped
-        const maxPx = Math.min(3600, Math.round(Math.max(paperW, paperH) * 10));
-        const outW = Math.round(maxPx * (paperW / Math.max(paperW, paperH)));
-        const outH = Math.round(maxPx * (paperH / Math.max(paperW, paperH)));
-
-        // Homography maps output-rect coords -> source-photo coords
-        const dstRect = [{ x: 0, y: 0 }, { x: outW, y: 0 }, { x: outW, y: outH }, { x: 0, y: outH }];
-        const H = _solveHomography(dstRect, [tl, tr, br, bl]);
-
-        const out = document.createElement('canvas');
-        out.width = outW; out.height = outH;
-        const ctx = out.getContext('2d');
-
-        // Tessellate the output into an N×N grid; affine-map each cell's triangles
-        const N = 24;
-        const grid = [];
-        for (let j = 0; j <= N; j++) {
-            grid[j] = [];
-            for (let i = 0; i <= N; i++) {
-                const dx = (i / N) * outW, dy = (j / N) * outH;
-                grid[j][i] = { d: { x: dx, y: dy }, s: _applyH(H, dx, dy) };
-            }
-        }
-        for (let j = 0; j < N; j++) {
-            for (let i = 0; i < N; i++) {
-                const a = grid[j][i], b = grid[j][i + 1], c = grid[j + 1][i], e = grid[j + 1][i + 1];
-                _drawTexTriangle(ctx, visionSourceImg, [a.s, b.s, c.s], [a.d, b.d, c.d]);
-                _drawTexTriangle(ctx, visionSourceImg, [b.s, e.s, c.s], [b.d, e.d, c.d]);
-            }
-        }
-
+        if (pill) { pill.textContent = 'Flattening…'; pill.style.color = '#fbbf24'; }
+        const res = flattenCroppedPage();
+        if (!res) return;
+        const { out, paperW, paperH } = res;
         const flat = new Image();
         flat.onload = () => {
             const bedW = canvasEditor.view?.bedW || 960;
@@ -2082,15 +2089,101 @@ function addVisionToCanvas() {
         flat.src = out.toDataURL('image/png');
     } catch (e) {
         console.error('addVisionToCanvas:', e);
-        status.textContent = 'Flatten failed — try adjusting the corners.';
-        status.style.color = '#ef4444';
+        if (pill) { pill.textContent = 'Flatten failed — adjust the corners.'; pill.style.color = '#ef4444'; }
     }
+}
+
+// ── Extract Drawing: vectorize the flattened page, grouped by ink color ──────
+let _extractResult = null;
+const OP_OPTIONS = [
+    { v: 'thru_cut', label: 'Cut' },
+    { v: 'crease',   label: 'Crease' },
+    { v: 'off_base', label: 'Off-base' },
+    { v: 'draw',     label: 'Draw' },
+    { v: 'ignore',   label: 'Ignore' },
+];
+// Remember the last operation chosen for a given color name (convenience default)
+const _lastOpForColor = {};
+
+function runExtractDrawing() {
+    if (!canvasEditor) return;
+    const pill = document.getElementById('visionCropStatus');
+    try {
+        if (pill) { pill.textContent = 'Flattening…'; pill.style.color = '#fbbf24'; }
+        const res = flattenCroppedPage();
+        if (!res) return;
+        if (pill) pill.textContent = 'Extracting drawing…';
+        // Defer so the pill repaints before the (synchronous) heavy analysis
+        setTimeout(() => {
+            try {
+                _extractResult = analyzeDrawing(res.out, res.paperW, res.paperH);
+                renderExtractPanel(_extractResult);
+                if (pill) pill.textContent = '';
+            } catch (err) {
+                console.error('analyzeDrawing:', err);
+                if (pill) { pill.textContent = 'Extraction failed.'; pill.style.color = '#ef4444'; }
+            }
+        }, 30);
+    } catch (e) {
+        console.error('runExtractDrawing:', e);
+        if (pill) { pill.textContent = 'Extraction failed.'; pill.style.color = '#ef4444'; }
+    }
+}
+
+function renderExtractPanel(result) {
+    const panel = document.getElementById('visionExtractPanel');
+    const list = document.getElementById('vepColors');
+    const applyBtn = document.getElementById('btnVepApply');
+    if (!panel || !list) return;
+    list.innerHTML = '';
+
+    if (!result.colors.length) {
+        list.innerHTML = '<div class="vep-empty">No distinct ink colors detected against this substrate. Try re-cropping tighter to the drawing, or check contrast.</div>';
+        if (applyBtn) applyBtn.style.display = 'none';
+    } else {
+        if (applyBtn) applyBtn.style.display = '';
+        result.colors.forEach((col, i) => {
+            const [r, g, b] = col.rgb;
+            const row = document.createElement('div');
+            row.className = 'vep-row';
+            const suggested = _lastOpForColor[col.name] || (i === 0 ? 'thru_cut' : 'draw');
+            const opts = OP_OPTIONS.map(o => `<option value="${o.v}" ${o.v === suggested ? 'selected' : ''}>${o.label}</option>`).join('');
+            row.innerHTML =
+                `<span class="vep-swatch" style="background:rgb(${r},${g},${b})"></span>` +
+                `<span class="vep-label">${col.name}<small>${col.paths.length} stroke${col.paths.length === 1 ? '' : 's'}</small></span>` +
+                `<select data-idx="${i}">${opts}</select>`;
+            list.appendChild(row);
+        });
+    }
+    panel.classList.remove('hidden');
+}
+
+function applyExtractedLayers() {
+    if (!_extractResult) return;
+    const assignments = {};
+    document.querySelectorAll('#vepColors select').forEach(sel => {
+        const idx = parseInt(sel.getAttribute('data-idx'), 10);
+        assignments[idx] = sel.value;
+        const col = _extractResult.colors[idx];
+        if (col) _lastOpForColor[col.name] = sel.value;
+    });
+    const svg = buildSVG(_extractResult, assignments);
+    canvasEditor.importSVG(svg);
+    const n = Object.values(assignments).filter(v => v && v !== 'ignore').length;
+    log(`Extracted drawing: added ${n} operation layer${n === 1 ? '' : 's'} to canvas.`, 'success');
+    if (window.switchTab) window.switchTab('draw');
+    closeVisionModal();
 }
 
 document.getElementById('visionPaperSize')?.addEventListener('change', (e) => {
     document.getElementById('visionCustomSize').style.display = e.target.value === 'custom' ? 'flex' : 'none';
 });
 document.getElementById('btnVisionAddToCanvas')?.addEventListener('click', addVisionToCanvas);
+document.getElementById('btnVisionExtract')?.addEventListener('click', runExtractDrawing);
+document.getElementById('btnVepApply')?.addEventListener('click', applyExtractedLayers);
+document.getElementById('btnVepBack')?.addEventListener('click', () => {
+    document.getElementById('visionExtractPanel')?.classList.add('hidden');
+});
 
 // Upload a saved image straight from the PC (same detect → crop → flatten flow)
 document.getElementById('btnVisionUpload')?.addEventListener('click', () => {
@@ -2121,6 +2214,8 @@ function resetVisionToConnect() {
     const qrContainer = document.getElementById('visionQrContainer');
     if (qrContainer) qrContainer.style.display = 'flex';
     document.getElementById('visionLoupe').style.display = 'none';
+    document.getElementById('visionExtractPanel')?.classList.add('hidden');
+    _extractResult = null;
     const pill = document.getElementById('visionCropStatus');
     if (pill) pill.textContent = '';
     visionSourceImg = null; cropCorners = null; _activeCorner = -1;
