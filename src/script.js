@@ -1728,14 +1728,17 @@ function detectPageCorners(img, timeoutMs = 9000) {
     });
 }
 
+let _hintFadeTimer = null;
 function showVisionPreview(img, detectedCorners) {
     visionSourceImg = img;
-    const uploadRow = document.getElementById('visionUploadRow');
-    if (uploadRow) uploadRow.style.display = 'none';
-    document.getElementById('visionCropArea').style.display = 'block';
-    document.getElementById('visionPaperControls').style.display = 'flex';
-    document.getElementById('visionCropHint').style.display = 'block';
-    document.getElementById('btnVisionAddToCanvas').style.display = 'block';
+    // Swap connect → crop state: widen the modal so the canvas flexes to fill it
+    document.querySelector('.vision-modal')?.classList.add('cropping');
+    const hint = document.getElementById('visionCropHint');
+    if (hint) {
+        hint.classList.remove('faded');
+        clearTimeout(_hintFadeTimer);
+        _hintFadeTimer = setTimeout(() => hint.classList.add('faded'), 4500);
+    }
 
     const nw = img.naturalWidth || img.width, nh = img.naturalHeight || img.height;
     // Use phone-detected page corners when valid (4 points inside the image), else a default rectangle
@@ -1752,33 +1755,31 @@ function showVisionPreview(img, detectedCorners) {
     fitCropView();
     if (!_cropRO) { _cropRO = new ResizeObserver(() => { fitCropView(); }); _cropRO.observe(document.getElementById('visionCropArea')); }
 
-    const status = document.getElementById('visionStatusText');
-    status.textContent = valid
-        ? 'Page auto-detected — fine-tune the corners if needed.'
-        : 'Scroll to zoom, then drag each corner to a paper edge.';
-    status.style.color = valid ? '#10b981' : '#60a5fa';
+    const pill = document.getElementById('visionCropStatus');
+    if (pill) {
+        pill.textContent = valid
+            ? '✓ Page auto-detected — fine-tune if needed'
+            : 'Drag each corner to a paper edge';
+        pill.style.color = valid ? '#10b981' : '#60a5fa';
+    }
 }
 
 // Fit the whole photo into the canvas box at z=1 and centre it (retries until laid out).
 let _cropFitRetries = 0;
 function fitCropView() {
     const area = document.getElementById('visionCropArea');
-    const boxW = area.clientWidth;
-    if (!boxW && _cropFitRetries < 60) { _cropFitRetries++; requestAnimationFrame(fitCropView); return; }
+    const boxW = area.clientWidth, boxH = area.clientHeight;
+    if ((!boxW || !boxH) && _cropFitRetries < 60) { _cropFitRetries++; requestAnimationFrame(fitCropView); return; }
     _cropFitRetries = 0;
-    if (!boxW || !visionSourceImg) return;
+    if (!boxW || !boxH || !visionSourceImg) return;
 
     const nw = visionSourceImg.naturalWidth, nh = visionSourceImg.naturalHeight;
-    const maxH = Math.min(window.innerHeight * 0.5, 460);
-    const boxH = Math.min(maxH, boxW * (nh / nw));
     cropView.boxW = boxW; cropView.boxH = boxH;
     cropView.baseScale = Math.min(boxW / nw, boxH / nh);
     cropView.z = 1;
     cropView.ox = (boxW - nw * cropView.baseScale) / 2;
     cropView.oy = (boxH - nh * cropView.baseScale) / 2;
 
-    const cv = document.getElementById('visionCropCanvas');
-    cv.style.height = boxH + 'px';
     drawCropOverlay();
 }
 
@@ -2114,6 +2115,30 @@ document.getElementById('visionUploadInput')?.addEventListener('change', (e) => 
     img.src = URL.createObjectURL(file);
 });
 
+// Back to the connect (QR / upload) state — used on modal open and "New photo"
+function resetVisionToConnect() {
+    document.querySelector('.vision-modal')?.classList.remove('cropping');
+    const qrContainer = document.getElementById('visionQrContainer');
+    if (qrContainer) qrContainer.style.display = 'flex';
+    document.getElementById('visionLoupe').style.display = 'none';
+    const pill = document.getElementById('visionCropStatus');
+    if (pill) pill.textContent = '';
+    visionSourceImg = null; cropCorners = null; _activeCorner = -1;
+    _isPanning = false; cropView.z = 1; cropView.ox = 0; cropView.oy = 0;
+}
+
+document.getElementById('btnVisionNewPhoto')?.addEventListener('click', () => {
+    resetVisionToConnect();
+    // Peer stays alive — the same QR keeps working for another shot
+    const status = document.getElementById('visionStatusText');
+    if (status && peer && !peer.destroyed) {
+        status.textContent = peerConnection && peerConnection.open
+            ? 'Phone connected — send another photo, or upload from PC.'
+            : 'Waiting for phone connection...';
+        status.style.color = '#60a5fa';
+    }
+});
+
 function initPeerConnection() {
     const statusText = document.getElementById('visionStatusText');
     const qrContainer = document.getElementById('visionQrContainer');
@@ -2227,19 +2252,7 @@ function initPeerConnection() {
 document.getElementById('dtVision')?.addEventListener('click', () => {
     if (!visionQrModal) return;
 
-    // Reset popup UI (in case a photo was previewed in a previous session)
-    const qrContainer = document.getElementById('visionQrContainer');
-    document.getElementById('visionCropArea').style.display = 'none';
-    document.getElementById('visionLoupe').style.display = 'none';
-    document.getElementById('btnVisionAddToCanvas').style.display = 'none';
-    document.getElementById('visionCropHint').style.display = 'none';
-    document.getElementById('visionPaperControls').style.display = 'none';
-    if (qrContainer) qrContainer.style.display = 'flex';
-    const uploadRow = document.getElementById('visionUploadRow');
-    if (uploadRow) uploadRow.style.display = 'flex';
-    visionSourceImg = null; cropCorners = null; _activeCorner = -1;
-    _isPanning = false; cropView.z = 1; cropView.ox = 0; cropView.oy = 0;
-
+    resetVisionToConnect();
     visionQrModal.classList.remove('hidden');
     setTimeout(() => visionQrModal.classList.add('visible'), 10);
 

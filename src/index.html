@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UrumiCutter V2 - Control Dashboard</title>
-    <link rel="stylesheet" href="styles.css?v=16">
+    <link rel="stylesheet" href="styles.css?v=17">
     <!-- Google Font for Outfit and Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -630,52 +630,61 @@
                 <button id="btnCloseVisionModal" class="btn-icon">&times;</button>
             </div>
             <div class="modal-body vision-body">
-                <p class="vision-sub">
-                    Scan with your phone — the photo streams straight into this canvas
-                    over a direct peer-to-peer link.
-                </p>
-                <div id="visionQrContainer" class="vision-qr"></div>
+                <!-- STATE A: connect (QR / upload) — hidden once a photo arrives -->
+                <div id="visionStateConnect" class="vision-state-connect">
+                    <p class="vision-sub">
+                        Scan with your phone — the photo streams straight into this canvas
+                        over a direct peer-to-peer link.
+                    </p>
+                    <div id="visionQrContainer" class="vision-qr"></div>
+                    <p id="visionStatusText" class="vision-status">Starting…</p>
 
-                <!-- Or upload a saved image straight from the PC -->
-                <div id="visionUploadRow" class="vision-upload-row">
-                    <div class="vision-divider"><span>or</span></div>
-                    <button id="btnVisionUpload" class="vision-upload-btn">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                            <polyline points="17 8 12 3 7 8"></polyline>
-                            <line x1="12" y1="3" x2="12" y2="15"></line>
-                        </svg>
-                        Upload image from PC
-                    </button>
-                    <input type="file" id="visionUploadInput" accept="image/*" style="display:none;">
-                </div>
-
-                <div id="visionCropArea" class="vision-crop-area">
-                    <canvas id="visionCropCanvas"></canvas>
-                    <canvas id="visionLoupe" width="140" height="140"></canvas>
-                </div>
-                <p id="visionStatusText" class="vision-status">Starting…</p>
-
-                <!-- Paper-size normalisation controls (shown once a photo arrives) -->
-                <div id="visionPaperControls" class="vision-paper-controls">
-                    <label>
-                        <span>Paper size</span>
-                        <select id="visionPaperSize">
-                            <option value="A4">A4 — 210 × 297 mm</option>
-                            <option value="A3">A3 — 297 × 420 mm</option>
-                            <option value="A5">A5 — 148 × 210 mm</option>
-                            <option value="Letter">Letter — 216 × 279 mm</option>
-                            <option value="custom">Custom…</option>
-                        </select>
-                    </label>
-                    <div id="visionCustomSize" class="vision-custom-size">
-                        <input type="number" id="visionPaperW" value="210" min="10" step="1"> ×
-                        <input type="number" id="visionPaperH" value="297" min="10" step="1"> mm
+                    <!-- Or upload a saved image straight from the PC -->
+                    <div id="visionUploadRow" class="vision-upload-row">
+                        <div class="vision-divider"><span>or</span></div>
+                        <button id="btnVisionUpload" class="vision-upload-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="17 8 12 3 7 8"></polyline>
+                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                            </svg>
+                            Upload image from PC
+                        </button>
+                        <input type="file" id="visionUploadInput" accept="image/*" style="display:none;">
                     </div>
                 </div>
 
-                <p id="visionCropHint" class="vision-hint">Scroll to zoom · drag the image to pan · hover a corner to inspect, drag to adjust.</p>
-                <button id="btnVisionAddToCanvas" class="vision-cta">Crop, Flatten &amp; Add to Canvas</button>
+                <!-- STATE B: crop (photo received) — replaces the connect state entirely -->
+                <div id="visionStateCrop" class="vision-state-crop">
+                    <div id="visionCropArea" class="vision-crop-area">
+                        <canvas id="visionCropCanvas"></canvas>
+                        <canvas id="visionLoupe" width="140" height="140"></canvas>
+                        <span id="visionCropStatus" class="vision-crop-status"></span>
+                        <button id="btnVisionNewPhoto" class="vision-new-photo" title="Discard and capture / upload a different photo">&larr; New photo</button>
+                        <p id="visionCropHint" class="vision-hint">Scroll to zoom · drag to pan · hover a corner to inspect, drag to adjust</p>
+                    </div>
+
+                    <!-- Sticky footer: paper size + CTA always visible, no scrolling -->
+                    <div class="vision-footer">
+                        <div id="visionPaperControls" class="vision-paper-controls">
+                            <label>
+                                <span>Paper</span>
+                                <select id="visionPaperSize">
+                                    <option value="A4">A4 — 210 × 297 mm</option>
+                                    <option value="A3">A3 — 297 × 420 mm</option>
+                                    <option value="A5">A5 — 148 × 210 mm</option>
+                                    <option value="Letter">Letter — 216 × 279 mm</option>
+                                    <option value="custom">Custom…</option>
+                                </select>
+                            </label>
+                            <div id="visionCustomSize" class="vision-custom-size">
+                                <input type="number" id="visionPaperW" value="210" min="10" step="1"> ×
+                                <input type="number" id="visionPaperH" value="297" min="10" step="1"> mm
+                            </div>
+                        </div>
+                        <button id="btnVisionAddToCanvas" class="vision-cta">Crop, Flatten &amp; Add to Canvas</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -683,7 +692,7 @@
     <!-- SCRIPTS -->
     <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="trace_skeleton.js"></script>
-    <script type="module" src="script.js?v=28"></script>
+    <script type="module" src="script.js?v=29"></script>
 
 </body>
 </html>

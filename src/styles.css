@@ -2687,7 +2687,9 @@ body .btn-action { /* Specificity override */
 }
 
 /* ── Vision Capture modal ─────────────────────────────────────────── */
-.vision-modal { width: 380px; }
+.vision-modal { width: 380px; max-height: 92vh; transition: width 0.25s ease, height 0.25s ease; }
+/* Crop state: wider, definite height so the crop canvas flexes to fill — nothing scrolls */
+.vision-modal.cropping { width: min(600px, 95vw); height: min(820px, 92vh); }
 
 .vision-modal .modal-header h2 {
     display: flex;
@@ -2704,7 +2706,31 @@ body .btn-action { /* Specificity override */
     gap: 0.9rem;
     text-align: center;
     padding: 1.25rem;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden; /* single-page: modal never scrolls internally */
 }
+
+/* State A: connect (QR / upload) */
+.vision-state-connect {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.9rem;
+    width: 100%;
+}
+.vision-modal.cropping .vision-state-connect { display: none; }
+
+/* State B: crop — hidden until a photo arrives */
+.vision-state-crop {
+    display: none;
+    flex-direction: column;
+    gap: 0.75rem;
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+}
+.vision-modal.cropping .vision-state-crop { display: flex; }
 
 .vision-sub { font-size: 0.82rem; color: var(--text-muted); margin: 0; line-height: 1.5; }
 
@@ -2754,9 +2780,10 @@ body .btn-action { /* Specificity override */
 .vision-upload-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
 
 .vision-crop-area {
-    display: none;
     position: relative;
     width: 100%;
+    flex: 1;
+    min-height: 260px;
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
@@ -2764,12 +2791,51 @@ body .btn-action { /* Specificity override */
 .vision-crop-area canvas#visionCropCanvas {
     display: block;
     width: 100%;
+    height: 100%;
     touch-action: none;
     cursor: grab;
     border-radius: 12px;
     background: #0f172a;
     box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06), 0 6px 18px rgba(15, 23, 42, 0.18);
 }
+
+/* Status pill overlaid on the crop canvas (no layout height cost) */
+.vision-crop-status {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    max-width: calc(100% - 120px);
+    padding: 0.3rem 0.65rem;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.72);
+    backdrop-filter: blur(4px);
+    color: #10b981;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-align: left;
+    pointer-events: none;
+    z-index: 4;
+}
+.vision-crop-status:empty { display: none; }
+
+/* Return to QR / upload without closing the modal */
+.vision-new-photo {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    padding: 0.28rem 0.6rem;
+    border: none;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.72);
+    backdrop-filter: blur(4px);
+    color: #e2e8f0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    z-index: 4;
+    transition: background 0.15s;
+}
+.vision-new-photo:hover { background: rgba(59, 130, 246, 0.85); }
 #visionLoupe {
     position: absolute;
     display: none;
@@ -2784,41 +2850,71 @@ body .btn-action { /* Specificity override */
 
 .vision-status { font-size: 0.83rem; font-weight: 600; margin: 0; }
 
-.vision-paper-controls { display: none; width: 100%; flex-direction: column; gap: 0.5rem; }
+/* Footer bar: paper size (left) + CTA (right), always visible */
+.vision-footer {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+}
+
+.vision-paper-controls { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }
 .vision-paper-controls label {
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     color: var(--text-muted);
     font-weight: 500;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    justify-content: space-between;
+    gap: 0.45rem;
 }
 .vision-paper-controls select {
-    flex: 1;
-    max-width: 62%;
     padding: 0.45rem 0.55rem;
     border-radius: 8px;
     border: 1px solid var(--border-dark);
     background: #fff;
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     color: var(--text-main);
     cursor: pointer;
+    max-width: 180px;
 }
-.vision-custom-size { display: none; gap: 0.4rem; align-items: center; justify-content: flex-end; font-size: 0.8rem; color: var(--text-muted); }
+.vision-custom-size { display: none; gap: 0.35rem; align-items: center; font-size: 0.78rem; color: var(--text-muted); }
 .vision-custom-size input {
-    width: 64px;
+    width: 58px;
     padding: 0.35rem 0.4rem;
     border-radius: 8px;
     border: 1px solid var(--border-dark);
-    font-size: 0.8rem;
+    font-size: 0.78rem;
 }
 
-.vision-hint { display: none; font-size: 0.7rem; color: var(--text-muted); margin: 0; line-height: 1.5; }
+/* Hint overlays the bottom of the crop canvas and fades away */
+.vision-hint {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 92%;
+    margin: 0;
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.72);
+    backdrop-filter: blur(4px);
+    color: #cbd5e1;
+    font-size: 0.68rem;
+    line-height: 1.4;
+    pointer-events: none;
+    z-index: 4;
+    opacity: 1;
+    transition: opacity 0.8s ease;
+}
+.vision-hint.faded { opacity: 0; }
 
 .vision-cta {
-    display: none;
-    width: 100%;
+    flex: 1;
+    min-width: 200px;
     padding: 0.65rem 1rem;
     border: none;
     border-radius: 10px;
