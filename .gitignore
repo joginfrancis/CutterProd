@@ -28,6 +28,10 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
+# Archived / unrelated files — kept on disk, out of git and search
+archive/
+scratch/
+
 # Token constraints & workspace hygiene
 *.pyc
 __pycache__/

@@ -1,1 +1,0 @@
-# UrumiCam Server Package

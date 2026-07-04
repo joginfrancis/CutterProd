@@ -38,6 +38,17 @@ import SvgConverter from './SvgConverter.js?v=5';
 let _nextId = 1;
 function makeId() { return _nextId++; }
 
+// Deep-clone a shape for undo snapshots. JSON can't serialise an HTMLImageElement
+// (it turns into a plain {}), so reattach non-serialisable image refs after cloning.
+function cloneShape(shape) {
+    const c = JSON.parse(JSON.stringify(shape));
+    if (shape.img) c.img = shape.img;
+    if (Array.isArray(shape.children)) {
+        c.children = shape.children.map(cloneShape);
+    }
+    return c;
+}
+
 function makeGroup(children, name = 'Group') {
     return { id: makeId(), type: 'group', children: [...children], name };
 }
@@ -607,7 +618,7 @@ export class CanvasEditor {
                 this._resizeHandle = handle;
                 this._resizeOrigin = { x: handle.ox, y: handle.oy };
                 this._dragStart = { mx: m.x, my: m.y };
-                this._shapePre = this.shapes.filter(s => this._sel.includes(s.id)).map(s => JSON.parse(JSON.stringify(s)));
+                this._shapePre = this.shapes.filter(s => this._sel.includes(s.id)).map(cloneShape);
                 this._resizeStartBBox = shapeBBox(this._shapePre[0]);
                 return;
             }
@@ -616,11 +627,11 @@ export class CanvasEditor {
             
             if (hit && this._sel.includes(hit.id)) {
                 this._dragStart = { mx: m.x, my: m.y };
-                this._shapePre = this.shapes.filter(s => this._sel.includes(s.id)).map(s => JSON.parse(JSON.stringify(s)));
+                this._shapePre = this.shapes.filter(s => this._sel.includes(s.id)).map(cloneShape);
             } else if (hit) {
                 this._sel = [hit.id];
                 this._dragStart = { mx: m.x, my: m.y };
-                this._shapePre = [JSON.parse(JSON.stringify(hit))];
+                this._shapePre = [cloneShape(hit)];
             } else {
                 this._sel = [];
                 this._marqueeStart = { mx: m.x, my: m.y };
@@ -715,7 +726,7 @@ export class CanvasEditor {
                     sx = Math.max(sx, 0.01);
                     sy = Math.max(sy, 0.01);
                     
-                    Object.assign(shape, JSON.parse(JSON.stringify(pre)));
+                    Object.assign(shape, cloneShape(pre));
                     scaleShape(shape, sx, sy, this._resizeOrigin.x, this._resizeOrigin.y);
                 }
                 this.draw();
@@ -744,7 +755,7 @@ export class CanvasEditor {
                     if (this._sel.includes(shape.id)) {
                         const pre = this._shapePre.find(p => p.id === shape.id);
                         if (pre) {
-                            Object.assign(shape, JSON.parse(JSON.stringify(pre)));
+                            Object.assign(shape, cloneShape(pre));
                             translateShape(shape, dx, dy);
                         }
                     }
@@ -1169,7 +1180,11 @@ export class CanvasEditor {
         switch (shape.type) {
             case 'image': {
                 const { img, x, y, w, h } = shape;
-                if (img) {
+                // Only draw a genuine, decoded raster source — a stale/serialised img
+                // (e.g. from an undo snapshot) would otherwise throw and abort the draw.
+                const drawable = img instanceof HTMLImageElement || img instanceof HTMLCanvasElement
+                    || img instanceof ImageBitmap || (typeof VideoFrame !== 'undefined' && img instanceof VideoFrame);
+                if (drawable && img.width !== 0 && img.height !== 0) {
                     ctx.drawImage(img, mapX(x + w), mapY(y + h), w * scale, h * scale);
                 }
                 break;
