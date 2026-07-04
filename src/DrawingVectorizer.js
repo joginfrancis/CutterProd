@@ -17,8 +17,12 @@
 
 const MAX_EDGE = 1400;      // working raster cap — plenty for clean skeletons
 const K_INIT = 6;           // initial cluster count (over-cluster, then merge)
-const MERGE_DE = 14;        // centroids closer than this ΔE collapse into one color
-const MIN_CLUSTER_FRAC = 0.004; // drop clusters below this fraction of ink pixels
+// Distinct marker colors (red/green/blue/black) sit ~50-100 ΔE apart, while a single
+// marker's solid core vs its anti-aliased edge differ by ~15-30 ΔE. A generous merge
+// threshold collapses those shade variants into ONE color so a stroke yields a single
+// centerline (not core + two boundary skeletons, which looked like doubled/offset lines).
+const MERGE_DE = 32;
+const MIN_CLUSTER_FRAC = 0.01; // drop clusters below this fraction of ink pixels (spurs)
 
 // ── color space ──────────────────────────────────────────────────────────
 function srgbToLin(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
@@ -81,18 +85,33 @@ function simplify(poly) {
     return s.length < 2 ? pts : s;
 }
 function num(v) { return Number(v.toFixed(2)); }
-// Catmull-Rom → cubic Bézier smoothing. The canvas importer now tessellates
-// curves, so compact C-segments render smoothly and stay small.
+// Straightness at vertex b between a→b and b→c: 1 when collinear, 0 at a ≥90° turn.
+// Used to suppress smoothing across sharp corners so they stay crisp.
+function straightness(a, b, c) {
+    const ux = b.x - a.x, uy = b.y - a.y, vx = c.x - b.x, vy = c.y - b.y;
+    const lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy);
+    if (lu < 1e-6 || lv < 1e-6) return 1;
+    return Math.max(0, (ux * vx + uy * vy) / (lu * lv));
+}
+// Corner-aware Catmull-Rom → cubic Bézier. Handles are (a) scaled by local
+// straightness so sharp corners stay sharp, and (b) length-capped to 1/3 of the
+// segment so gentle curves can never overshoot/balloon outward. The canvas importer
+// tessellates the resulting C-segments back to points for editing/CAM.
 function toPathD(pts) {
     if (!pts.length) return '';
     if (pts.length === 1) return `M ${num(pts[0].x)},${num(pts[0].y)}`;
     if (pts.length === 2) return `M ${num(pts[0].x)},${num(pts[0].y)} L ${num(pts[1].x)},${num(pts[1].y)}`;
-    const T = 0.85;
+    const T = 0.9;
+    const cap = (hx, hy, max) => { const l = Math.hypot(hx, hy); return l > max && l > 0 ? [hx * max / l, hy * max / l] : [hx, hy]; };
     let d = `M ${num(pts[0].x)},${num(pts[0].y)}`;
     for (let i = 0; i < pts.length - 1; i++) {
         const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-        const c1 = { x: p1.x + ((p2.x - p0.x) * T) / 6, y: p1.y + ((p2.y - p0.y) * T) / 6 };
-        const c2 = { x: p2.x - ((p3.x - p1.x) * T) / 6, y: p2.y - ((p3.y - p1.y) * T) / 6 };
+        const s1 = straightness(p0, p1, p2), s2 = straightness(p1, p2, p3);
+        const seg = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+        let [h1x, h1y] = cap((p2.x - p0.x) * T / 6 * s1, (p2.y - p0.y) * T / 6 * s1, seg / 3);
+        let [h2x, h2y] = cap((p3.x - p1.x) * T / 6 * s2, (p3.y - p1.y) * T / 6 * s2, seg / 3);
+        const c1 = { x: p1.x + h1x, y: p1.y + h1y };
+        const c2 = { x: p2.x - h2x, y: p2.y - h2y };
         d += ` C ${num(c1.x)},${num(c1.y)} ${num(c2.x)},${num(c2.y)} ${num(p2.x)},${num(p2.y)}`;
     }
     return d;
