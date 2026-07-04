@@ -81,6 +81,8 @@ function simplify(poly) {
     return s.length < 2 ? pts : s;
 }
 function num(v) { return Number(v.toFixed(2)); }
+// Catmull-Rom → cubic Bézier smoothing. The canvas importer now tessellates
+// curves, so compact C-segments render smoothly and stay small.
 function toPathD(pts) {
     if (!pts.length) return '';
     if (pts.length === 1) return `M ${num(pts[0].x)},${num(pts[0].y)}`;
@@ -240,18 +242,19 @@ export function analyzeDrawing(sourceCanvas, paperW, paperH, opts = {}) {
 
 // Build an SVG from color→method assignments. `assignments` maps color index
 // (into result.colors) → method ('thru_cut'|'off_base'|'crease'|'draw'|'ignore').
-const METHOD_STROKE = { thru_cut: '#3b82f6', off_base: '#8b5cf6', crease: '#f59e0b', draw: '#111827' };
 export function buildSVG(result, assignments) {
     const { w, h, paperW, paperH, colors } = result;
     let body = '';
     colors.forEach((col, i) => {
         const method = assignments[i];
         if (!method || method === 'ignore') return;
-        const stroke = METHOD_STROKE[method] || '#111827';
-        // 'draw' is a pen operation; downstream treats unknown methods as thru_cut,
-        // so tag draw as thru_cut geometry but keep a data-op hint for future use.
+        // Stroke = the ORIGINAL ink color so the canvas visually matches the drawing
+        // (blue cat, red box, green cross) for validation; data-method carries the
+        // machine operation for Create Path. 'draw' has no cut geometry downstream,
+        // so it is tagged thru_cut but kept distinct via data-op.
+        const [r, g, b] = col.rgb;
         const dm = method === 'draw' ? 'thru_cut' : method;
-        body += `  <path d="${col.paths.join(' ')}" fill="none" stroke="${stroke}" stroke-width="2" vector-effect="non-scaling-stroke" data-method="${dm}" data-op="${method}"/>\n`;
+        body += `  <path d="${col.paths.join(' ')}" fill="none" stroke="rgb(${r},${g},${b})" stroke-width="0.5" vector-effect="non-scaling-stroke" data-method="${dm}" data-op="${method}"/>\n`;
     });
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${paperW}mm" height="${paperH}mm">\n${body}</svg>`;
 }

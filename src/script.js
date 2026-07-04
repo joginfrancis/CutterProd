@@ -36,8 +36,8 @@ import { MachineConnection } from './Connection.js';
 import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
-import { CanvasEditor } from './CanvasEditor.js?v=8';
-import { analyzeDrawing, buildSVG } from './DrawingVectorizer.js?v=2';
+import { CanvasEditor } from './CanvasEditor.js?v=10';
+import { analyzeDrawing, buildSVG } from './DrawingVectorizer.js?v=4';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -2095,6 +2095,7 @@ function addVisionToCanvas() {
 
 // ── Extract Drawing: vectorize the flattened page, grouped by ink color ──────
 let _extractResult = null;
+let _extractFlat = null; // { out:<canvas>, paperW, paperH } — flattened page for reference underlay
 const OP_OPTIONS = [
     { v: 'thru_cut', label: 'Cut' },
     { v: 'crease',   label: 'Crease' },
@@ -2116,6 +2117,7 @@ function runExtractDrawing() {
         // Defer so the pill repaints before the (synchronous) heavy analysis
         setTimeout(() => {
             try {
+                _extractFlat = res; // keep the flattened page for the reference underlay
                 _extractResult = analyzeDrawing(res.out, res.paperW, res.paperH);
                 renderExtractPanel(_extractResult);
                 if (pill) pill.textContent = '';
@@ -2169,6 +2171,19 @@ function applyExtractedLayers() {
     });
     const svg = buildSVG(_extractResult, assignments);
     canvasEditor.importSVG(svg);
+    // Add the flattened photo as a faint reference layer UNDER the vectors, so manual
+    // edits can be aligned against the real drawing. Excluded from toolpath export.
+    if (_extractFlat) {
+        const bedW = canvasEditor.view?.bedW || 960;
+        const bedH = canvasEditor.view?.bedH || 770;
+        const { out, paperW, paperH } = _extractFlat;
+        const ref = new Image();
+        ref.onload = () => {
+            const x = (bedW - paperW) / 2, y = (bedH - paperH) / 2;
+            canvasEditor.addImage(ref, x, y, paperW, paperH, { opacity: 0.25, background: true, name: 'Reference (flattened)' });
+        };
+        ref.src = out.toDataURL('image/png');
+    }
     const n = Object.values(assignments).filter(v => v && v !== 'ignore').length;
     log(`Extracted drawing: added ${n} operation layer${n === 1 ? '' : 's'} to canvas.`, 'success');
     if (window.switchTab) window.switchTab('draw');
@@ -2216,6 +2231,7 @@ function resetVisionToConnect() {
     document.getElementById('visionLoupe').style.display = 'none';
     document.getElementById('visionExtractPanel')?.classList.add('hidden');
     _extractResult = null;
+    _extractFlat = null;
     const pill = document.getElementById('visionCropStatus');
     if (pill) pill.textContent = '';
     visionSourceImg = null; cropCorners = null; _activeCorner = -1;

@@ -436,7 +436,7 @@ export class CanvasEditor {
 
     clearAll() { this.shapes = []; this._sel = []; this.draw(); }
 
-    addImage(img, x, y, w, h) {
+    addImage(img, x, y, w, h, opts = {}) {
         const id = makeId();
         const shape = {
             id,
@@ -448,9 +448,13 @@ export class CanvasEditor {
             h,
             strokeWidth: 0,
             method: 'none',
-            name: 'Background Image'
+            opacity: opts.opacity != null ? opts.opacity : 1,
+            reference: !!opts.background, // reference layer: excluded from toolpath export
+            name: opts.name || 'Background Image'
         };
-        this.shapes.push(shape);
+        // background references sit at the bottom of the draw order (drawn first)
+        if (opts.background) this.shapes.unshift(shape);
+        else this.shapes.push(shape);
         this.draw();
         this._emitChange();
         return id;
@@ -1169,6 +1173,8 @@ export class CanvasEditor {
         if (isDraft) {
             ctx.strokeStyle = 'rgba(59,130,246,0.7)'; // accent blue
             ctx.setLineDash([4, 4]);
+        } else if (shape.color) {
+            ctx.strokeStyle = shape.color; // preserved display color (e.g. extracted ink)
         } else {
             if (shape.method === 'crease') ctx.strokeStyle = '#f59e0b'; // amber/orange
             else if (shape.method === 'off_base') ctx.strokeStyle = '#8b5cf6'; // purple
@@ -1185,7 +1191,10 @@ export class CanvasEditor {
                 const drawable = img instanceof HTMLImageElement || img instanceof HTMLCanvasElement
                     || img instanceof ImageBitmap || (typeof VideoFrame !== 'undefined' && img instanceof VideoFrame);
                 if (drawable && img.width !== 0 && img.height !== 0) {
+                    const prevAlpha = ctx.globalAlpha;
+                    if (shape.opacity != null) ctx.globalAlpha = shape.opacity;
                     ctx.drawImage(img, mapX(x + w), mapY(y + h), w * scale, h * scale);
+                    ctx.globalAlpha = prevAlpha;
                 }
                 break;
             }
@@ -1396,13 +1405,15 @@ ${elements}
                 if (!d) return;
                 const strokeWidth = parseFloat(p.getAttribute('stroke-width')) || 1.5;
                 const method = p.getAttribute('data-method') || 'thru_cut';
+                const strokeColor = p.getAttribute('stroke'); // preserved display color (e.g. extracted ink)
                 
                 const commands = converter.parsePathData(d);
                 
                 let currentPathPts = [];
                 let startPt = null;
                 let cur = {x:0, y:0};
-                
+                let prevCtrl = null; // previous curve's control point, for S/T reflection
+
                 commands.forEach(cmd => {
                     const isRelative = (cmd.type === cmd.type.toLowerCase());
                     const type = cmd.type.toUpperCase();
@@ -1418,6 +1429,7 @@ ${elements}
                             if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
                             else shape = makePencil(currentPathPts, strokeWidth);
                             shape.method = method;
+                            if (strokeColor) shape.color = strokeColor;
                             this.shapes.push(shape);
                             currentPathPts = [];
                         }
@@ -1458,21 +1470,48 @@ ${elements}
                             if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
                             else shape = makePencil(currentPathPts, strokeWidth);
                             shape.method = method;
+                            if (strokeColor) shape.color = strokeColor;
                             this.shapes.push(shape);
                             currentPathPts = [];
                         }
                     } else if (type === 'C' || type === 'S' || type === 'Q' || type === 'T') {
-                        // Approximate curves by linking endpoints for canvas preview
-                        const ptsPerCmd = (type === 'C') ? 6 : ((type === 'S' || type === 'Q') ? 4 : 2);
-                        for (let k = 0; k < args.length; k += ptsPerCmd) {
-                            const endIdx = k + ptsPerCmd - 2;
-                            if (endIdx < args.length) {
-                                const pt = getPt(endIdx);
-                                cur = pt;
-                                currentPathPts.push({ x: fx(pt.x), y: fy(pt.y) });
+                        // Tessellate curves into points along the actual curve (quadratics
+                        // are promoted to cubics), so smoothness is preserved on import.
+                        const stride = (type === 'C') ? 6 : ((type === 'S' || type === 'Q') ? 4 : 2);
+                        for (let k = 0; k + stride <= args.length; k += stride) {
+                            const p0 = { x: cur.x, y: cur.y };
+                            let c1, c2, end;
+                            if (type === 'C') {
+                                c1 = getPt(k); c2 = getPt(k + 2); end = getPt(k + 4);
+                            } else if (type === 'S') {
+                                c1 = prevCtrl ? { x: 2 * cur.x - prevCtrl.x, y: 2 * cur.y - prevCtrl.y } : { x: cur.x, y: cur.y };
+                                c2 = getPt(k); end = getPt(k + 2);
+                            } else if (type === 'Q') {
+                                const cq = getPt(k); end = getPt(k + 2);
+                                c1 = { x: cur.x + (2 / 3) * (cq.x - cur.x), y: cur.y + (2 / 3) * (cq.y - cur.y) };
+                                c2 = { x: end.x + (2 / 3) * (cq.x - end.x), y: end.y + (2 / 3) * (cq.y - end.y) };
+                                prevCtrl = cq;
+                            } else { // T — reflect previous quadratic control
+                                const cq = prevCtrl ? { x: 2 * cur.x - prevCtrl.x, y: 2 * cur.y - prevCtrl.y } : { x: cur.x, y: cur.y };
+                                end = getPt(k);
+                                c1 = { x: cur.x + (2 / 3) * (cq.x - cur.x), y: cur.y + (2 / 3) * (cq.y - cur.y) };
+                                c2 = { x: end.x + (2 / 3) * (cq.x - end.x), y: end.y + (2 / 3) * (cq.y - end.y) };
+                                prevCtrl = cq;
                             }
+                            // adaptive sample count from control-polygon length (user units)
+                            const len = Math.hypot(c1.x - p0.x, c1.y - p0.y) + Math.hypot(c2.x - c1.x, c2.y - c1.y) + Math.hypot(end.x - c2.x, end.y - c2.y);
+                            const n = Math.max(6, Math.min(80, Math.ceil(len / 2)));
+                            for (let s = 1; s <= n; s++) {
+                                const t = s / n, mt = 1 - t;
+                                const x = mt * mt * mt * p0.x + 3 * mt * mt * t * c1.x + 3 * mt * t * t * c2.x + t * t * t * end.x;
+                                const y = mt * mt * mt * p0.y + 3 * mt * mt * t * c1.y + 3 * mt * t * t * c2.y + t * t * t * end.y;
+                                currentPathPts.push({ x: fx(x), y: fy(y) });
+                            }
+                            if (type === 'C' || type === 'S') prevCtrl = c2; // cubic 2nd control for reflection
+                            cur = end;
                         }
                     }
+                    if (type !== 'C' && type !== 'S' && type !== 'Q' && type !== 'T') prevCtrl = null;
                 });
                 
                 if (currentPathPts.length > 0) {
@@ -1480,6 +1519,7 @@ ${elements}
                     if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
                     else shape = makePencil(currentPathPts, strokeWidth);
                     shape.method = method;
+                    if (strokeColor) shape.color = strokeColor;
                     this.shapes.push(shape);
                 }
             });
