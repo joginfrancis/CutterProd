@@ -36,7 +36,7 @@ import { MachineConnection } from './Connection.js';
 import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
-import { CanvasEditor } from './CanvasEditor.js?v=10';
+import { CanvasEditor } from './CanvasEditor.js?v=11';
 import { analyzeDrawing, buildSVG } from './DrawingVectorizer.js?v=4';
 import { packMicrosegment } from './BinaryUtils.js';
 

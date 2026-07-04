@@ -99,10 +99,38 @@ function smoothPolyline(points, iterations = 2) {
 // We serialize into standard SVG viewBox space (origin top-left), so we
 // pre-flip both axes here. FileHandler then applies flipX/flipY to recover the
 // original machine-space coordinates without introducing a mirror.
+// ── 'path' shape: subpaths of cubic-Bézier segments, kept as curves until CAM ──
+// shape.subs: [ { start:{x,y}, segs:[{c1,c2,to}], closed } ]  (machine mm)
+function cubicAt(p0, s, t) {
+    const mt = 1 - t;
+    return {
+        x: mt * mt * mt * p0.x + 3 * mt * mt * t * s.c1.x + 3 * mt * t * t * s.c2.x + t * t * t * s.to.x,
+        y: mt * mt * mt * p0.y + 3 * mt * mt * t * s.c1.y + 3 * mt * t * t * s.c2.y + t * t * t * s.to.y,
+    };
+}
+function lineToCubic(from, to) {
+    return {
+        c1: { x: from.x + (to.x - from.x) / 3, y: from.y + (to.y - from.y) / 3 },
+        c2: { x: from.x + 2 * (to.x - from.x) / 3, y: from.y + 2 * (to.y - from.y) / 3 },
+        to: { x: to.x, y: to.y },
+    };
+}
+
 function shapeToPathD(shape, bedW, bedH) {
     const fx = x => (bedW - x);
     const fy = y => (bedH - y); // machine Y-up → SVG Y-down
     switch (shape.type) {
+        case 'path': {
+            let d = '';
+            for (const sub of shape.subs) {
+                d += `M ${fx(sub.start.x).toFixed(3)} ${fy(sub.start.y).toFixed(3)} `;
+                for (const s of sub.segs) {
+                    d += `C ${fx(s.c1.x).toFixed(3)} ${fy(s.c1.y).toFixed(3)} ${fx(s.c2.x).toFixed(3)} ${fy(s.c2.y).toFixed(3)} ${fx(s.to.x).toFixed(3)} ${fy(s.to.y).toFixed(3)} `;
+                }
+                if (sub.closed) d += 'Z ';
+            }
+            return d.trim();
+        }
         case 'group': {
             return shape.children.map(child => shapeToPathD(child, bedW, bedH)).join(' ');
         }
@@ -145,6 +173,16 @@ function shapeToPathD(shape, bedW, bedH) {
 
 function shapeBBox(shape) {
     switch (shape.type) {
+        case 'path': {
+            const xs = [], ys = [];
+            for (const sub of shape.subs) {
+                xs.push(sub.start.x); ys.push(sub.start.y);
+                for (const s of sub.segs) { xs.push(s.c1.x, s.c2.x, s.to.x); ys.push(s.c1.y, s.c2.y, s.to.y); }
+            }
+            if (!xs.length) return { x: 0, y: 0, w: 0, h: 0 };
+            const minX = Math.min(...xs), minY = Math.min(...ys);
+            return { x: minX, y: minY, w: Math.max(...xs) - minX, h: Math.max(...ys) - minY };
+        }
         case 'group': {
             if (!shape.children || shape.children.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
             const boxes = shape.children.map(shapeBBox);
@@ -187,6 +225,12 @@ function translateShape(shape, dx, dy) {
         case 'group':
             shape.children.forEach(child => translateShape(child, dx, dy));
             break;
+        case 'path':
+            for (const sub of shape.subs) {
+                sub.start.x += dx; sub.start.y += dy;
+                for (const s of sub.segs) { s.c1.x += dx; s.c1.y += dy; s.c2.x += dx; s.c2.y += dy; s.to.x += dx; s.to.y += dy; }
+            }
+            break;
         case 'pencil':
             shape.points = shape.points.map(p => ({ x: p.x + dx, y: p.y + dy }));
             break;
@@ -215,9 +259,16 @@ function translateShape(shape, dx, dy) {
 // ─── Scale a shape by (sx, sy) around origin (ox, oy) ─────────────────────────
 
 function scaleShape(shape, sx, sy, ox, oy) {
+    const sp = p => ({ x: ox + (p.x - ox) * sx, y: oy + (p.y - oy) * sy });
     switch (shape.type) {
         case 'group':
             shape.children.forEach(child => scaleShape(child, sx, sy, ox, oy));
+            break;
+        case 'path':
+            for (const sub of shape.subs) {
+                sub.start = sp(sub.start);
+                for (const s of sub.segs) { s.c1 = sp(s.c1); s.c2 = sp(s.c2); s.to = sp(s.to); }
+            }
             break;
         case 'pencil':
             shape.points = shape.points.map(p => ({
@@ -281,6 +332,21 @@ function hitTest(shape, mx, my, tol = 4) {
     switch (shape.type) {
         case 'group':
             return shape.children.some(child => hitTest(child, mx, my, tol));
+        case 'path': {
+            for (const sub of shape.subs) {
+                let cur = sub.start;
+                for (const s of sub.segs) {
+                    let prev = cur;
+                    for (let k = 1; k <= 12; k++) {
+                        const p = cubicAt(cur, s, k / 12);
+                        if (pointNearSegment(mx, my, prev.x, prev.y, p.x, p.y, tol)) return true;
+                        prev = p;
+                    }
+                    cur = s.to;
+                }
+            }
+            return false;
+        }
         case 'pencil': {
             for (let i = 1; i < shape.points.length; i++) {
                 const p1 = shape.points[i - 1], p2 = shape.points[i];
@@ -1226,6 +1292,16 @@ export class CanvasEditor {
                 ctx.bezierCurveTo(mapX(cx1), mapY(cy1), mapX(cx2), mapY(cy2), mapX(x2), mapY(y2));
                 break;
             }
+            case 'path': {
+                for (const sub of shape.subs) {
+                    ctx.moveTo(mapX(sub.start.x), mapY(sub.start.y));
+                    for (const s of sub.segs) {
+                        ctx.bezierCurveTo(mapX(s.c1.x), mapY(s.c1.y), mapX(s.c2.x), mapY(s.c2.y), mapX(s.to.x), mapY(s.to.y));
+                    }
+                    if (sub.closed) ctx.closePath();
+                }
+                break;
+            }
         }
 
         ctx.stroke();
@@ -1406,119 +1482,76 @@ ${elements}
                 const strokeWidth = parseFloat(p.getAttribute('stroke-width')) || 1.5;
                 const method = p.getAttribute('data-method') || 'thru_cut';
                 const strokeColor = p.getAttribute('stroke'); // preserved display color (e.g. extracted ink)
-                
+
                 const commands = converter.parsePathData(d);
-                
-                let currentPathPts = [];
+
+                // Build a bezier-native 'path' shape: curves stay curves (machine mm);
+                // linearization is deferred to the CAM/toolpath step.
+                const mp = pt => ({ x: fx(pt.x), y: fy(pt.y) });
+                const subs = [];
+                let curSub = null;
+                let cur = { x: 0, y: 0 };   // user-space current point
                 let startPt = null;
-                let cur = {x:0, y:0};
-                let prevCtrl = null; // previous curve's control point, for S/T reflection
+                let prevCtrl = null;        // previous curve control (user space), for S/T reflection
+                const pushLine = (from, to) => { const lc = lineToCubic(from, to); curSub.segs.push({ c1: mp(lc.c1), c2: mp(lc.c2), to: mp(lc.to) }); };
+                const endSub = () => { if (curSub && curSub.segs.length) subs.push(curSub); curSub = null; };
 
                 commands.forEach(cmd => {
                     const isRelative = (cmd.type === cmd.type.toLowerCase());
                     const type = cmd.type.toUpperCase();
                     const args = cmd.args;
-                    
-                    const getPt = (idx) => isRelative 
-                        ? { x: cur.x + args[idx], y: cur.y + args[idx+1] }
-                        : { x: args[idx], y: args[idx+1] };
+                    const getPt = (idx) => isRelative
+                        ? { x: cur.x + args[idx], y: cur.y + args[idx + 1] }
+                        : { x: args[idx], y: args[idx + 1] };
 
                     if (type === 'M') {
-                        if (currentPathPts.length > 0) {
-                            let shape;
-                            if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
-                            else shape = makePencil(currentPathPts, strokeWidth);
-                            shape.method = method;
-                            if (strokeColor) shape.color = strokeColor;
-                            this.shapes.push(shape);
-                            currentPathPts = [];
-                        }
+                        endSub();
                         const pt = getPt(0);
-                        cur = pt;
-                        startPt = pt;
-                        currentPathPts.push({ x: fx(pt.x), y: fy(pt.y) });
-                        
-                        // Subsequent coordinates in M/m are treated as L/l
-                        for (let k = 2; k < args.length; k += 2) {
-                            const ptNext = getPt(k);
-                            cur = ptNext;
-                            currentPathPts.push({ x: fx(ptNext.x), y: fy(ptNext.y) });
-                        }
+                        cur = pt; startPt = pt;
+                        curSub = { start: mp(pt), segs: [], closed: false };
+                        for (let k = 2; k < args.length; k += 2) { const n = getPt(k); pushLine(cur, n); cur = n; }
                     } else if (type === 'L') {
-                        for (let k = 0; k < args.length; k += 2) {
-                            const pt = getPt(k);
-                            cur = pt;
-                            currentPathPts.push({ x: fx(pt.x), y: fy(pt.y) });
-                        }
+                        for (let k = 0; k < args.length; k += 2) { const n = getPt(k); if (curSub) pushLine(cur, n); cur = n; }
                     } else if (type === 'H') {
-                        for (let k = 0; k < args.length; k += 1) {
-                            cur.x = isRelative ? cur.x + args[k] : args[k];
-                            currentPathPts.push({ x: fx(cur.x), y: fy(cur.y) });
-                        }
+                        for (let k = 0; k < args.length; k += 1) { const n = { x: isRelative ? cur.x + args[k] : args[k], y: cur.y }; if (curSub) pushLine(cur, n); cur = n; }
                     } else if (type === 'V') {
-                        for (let k = 0; k < args.length; k += 1) {
-                            cur.y = isRelative ? cur.y + args[k] : args[k];
-                            currentPathPts.push({ x: fx(cur.x), y: fy(cur.y) });
-                        }
+                        for (let k = 0; k < args.length; k += 1) { const n = { x: cur.x, y: isRelative ? cur.y + args[k] : args[k] }; if (curSub) pushLine(cur, n); cur = n; }
                     } else if (type === 'Z') {
-                        if (startPt) {
-                            cur = { ...startPt };
-                            currentPathPts.push({ x: fx(cur.x), y: fy(cur.y) });
-                        }
-                        if (currentPathPts.length > 0) {
-                            let shape;
-                            if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
-                            else shape = makePencil(currentPathPts, strokeWidth);
-                            shape.method = method;
-                            if (strokeColor) shape.color = strokeColor;
-                            this.shapes.push(shape);
-                            currentPathPts = [];
-                        }
+                        if (curSub && startPt) { pushLine(cur, startPt); curSub.closed = true; cur = { ...startPt }; }
+                        endSub();
                     } else if (type === 'C' || type === 'S' || type === 'Q' || type === 'T') {
-                        // Tessellate curves into points along the actual curve (quadratics
-                        // are promoted to cubics), so smoothness is preserved on import.
+                        if (!curSub) { curSub = { start: mp(cur), segs: [], closed: false }; startPt = { ...cur }; }
                         const stride = (type === 'C') ? 6 : ((type === 'S' || type === 'Q') ? 4 : 2);
                         for (let k = 0; k + stride <= args.length; k += stride) {
-                            const p0 = { x: cur.x, y: cur.y };
-                            let c1, c2, end;
+                            let c1u, c2u, end;
                             if (type === 'C') {
-                                c1 = getPt(k); c2 = getPt(k + 2); end = getPt(k + 4);
+                                c1u = getPt(k); c2u = getPt(k + 2); end = getPt(k + 4);
                             } else if (type === 'S') {
-                                c1 = prevCtrl ? { x: 2 * cur.x - prevCtrl.x, y: 2 * cur.y - prevCtrl.y } : { x: cur.x, y: cur.y };
-                                c2 = getPt(k); end = getPt(k + 2);
+                                c1u = prevCtrl ? { x: 2 * cur.x - prevCtrl.x, y: 2 * cur.y - prevCtrl.y } : { ...cur };
+                                c2u = getPt(k); end = getPt(k + 2);
                             } else if (type === 'Q') {
                                 const cq = getPt(k); end = getPt(k + 2);
-                                c1 = { x: cur.x + (2 / 3) * (cq.x - cur.x), y: cur.y + (2 / 3) * (cq.y - cur.y) };
-                                c2 = { x: end.x + (2 / 3) * (cq.x - end.x), y: end.y + (2 / 3) * (cq.y - end.y) };
+                                c1u = { x: cur.x + (2 / 3) * (cq.x - cur.x), y: cur.y + (2 / 3) * (cq.y - cur.y) };
+                                c2u = { x: end.x + (2 / 3) * (cq.x - end.x), y: end.y + (2 / 3) * (cq.y - end.y) };
                                 prevCtrl = cq;
-                            } else { // T — reflect previous quadratic control
-                                const cq = prevCtrl ? { x: 2 * cur.x - prevCtrl.x, y: 2 * cur.y - prevCtrl.y } : { x: cur.x, y: cur.y };
+                            } else { // T
+                                const cq = prevCtrl ? { x: 2 * cur.x - prevCtrl.x, y: 2 * cur.y - prevCtrl.y } : { ...cur };
                                 end = getPt(k);
-                                c1 = { x: cur.x + (2 / 3) * (cq.x - cur.x), y: cur.y + (2 / 3) * (cq.y - cur.y) };
-                                c2 = { x: end.x + (2 / 3) * (cq.x - end.x), y: end.y + (2 / 3) * (cq.y - end.y) };
+                                c1u = { x: cur.x + (2 / 3) * (cq.x - cur.x), y: cur.y + (2 / 3) * (cq.y - cur.y) };
+                                c2u = { x: end.x + (2 / 3) * (cq.x - end.x), y: end.y + (2 / 3) * (cq.y - end.y) };
                                 prevCtrl = cq;
                             }
-                            // adaptive sample count from control-polygon length (user units)
-                            const len = Math.hypot(c1.x - p0.x, c1.y - p0.y) + Math.hypot(c2.x - c1.x, c2.y - c1.y) + Math.hypot(end.x - c2.x, end.y - c2.y);
-                            const n = Math.max(6, Math.min(80, Math.ceil(len / 2)));
-                            for (let s = 1; s <= n; s++) {
-                                const t = s / n, mt = 1 - t;
-                                const x = mt * mt * mt * p0.x + 3 * mt * mt * t * c1.x + 3 * mt * t * t * c2.x + t * t * t * end.x;
-                                const y = mt * mt * mt * p0.y + 3 * mt * mt * t * c1.y + 3 * mt * t * t * c2.y + t * t * t * end.y;
-                                currentPathPts.push({ x: fx(x), y: fy(y) });
-                            }
-                            if (type === 'C' || type === 'S') prevCtrl = c2; // cubic 2nd control for reflection
+                            curSub.segs.push({ c1: mp(c1u), c2: mp(c2u), to: mp(end) });
+                            if (type === 'C' || type === 'S') prevCtrl = c2u;
                             cur = end;
                         }
                     }
                     if (type !== 'C' && type !== 'S' && type !== 'Q' && type !== 'T') prevCtrl = null;
                 });
-                
-                if (currentPathPts.length > 0) {
-                    let shape;
-                    if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
-                    else shape = makePencil(currentPathPts, strokeWidth);
-                    shape.method = method;
+                endSub();
+
+                if (subs.length) {
+                    const shape = { id: makeId(), type: 'path', subs, strokeWidth, method, name: 'Path' };
                     if (strokeColor) shape.color = strokeColor;
                     this.shapes.push(shape);
                 }
