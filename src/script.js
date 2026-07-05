@@ -2082,9 +2082,12 @@ const OP_OPTIONS = [
 // Remember the last operation chosen for a given color name (convenience default)
 const _lastOpForColor = {};
 
-// Fully automatic: flatten → vectorize → insert every detected color as its own
-// selectable layer (original ink color, default 'Draw' operation) + a faint reference
-// image, all aligned. Color→operation is reassigned afterwards by selecting a layer.
+function rgbHex(rgb) { return '#' + rgb.map(v => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('').toUpperCase(); }
+// Rough perceptual distance for the "similar colours?" merge hint.
+function rgbDist(a, b) { const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2]; return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db) / 3; }
+
+// Detect colours, then show the (light-themed) assignment panel. Insert happens
+// only when the user confirms in the panel.
 function runExtractDrawing() {
     if (!canvasEditor) return;
     const pill = document.getElementById('visionCropStatus');
@@ -2092,16 +2095,13 @@ function runExtractDrawing() {
         if (pill) { pill.textContent = 'Flattening…'; pill.style.color = '#fbbf24'; }
         const res = flattenCroppedPage();
         if (!res) return;
-        if (pill) pill.textContent = 'Extracting drawing…';
+        if (pill) pill.textContent = 'Detecting colours…';
         setTimeout(() => {
             try {
                 _extractFlat = res;
                 _extractResult = analyzeDrawing(res.out, res.paperW, res.paperH);
-                if (!_extractResult.colors.length) {
-                    if (pill) { pill.textContent = 'No distinct ink detected — re-crop tighter or improve lighting.'; pill.style.color = '#ef4444'; }
-                    return;
-                }
-                insertExtracted(_extractResult, _extractFlat);
+                renderExtractPanel(_extractResult);
+                if (pill) pill.textContent = '';
             } catch (err) {
                 console.error('analyzeDrawing:', err);
                 if (pill) { pill.textContent = 'Extraction failed.'; pill.style.color = '#ef4444'; }
@@ -2113,17 +2113,67 @@ function runExtractDrawing() {
     }
 }
 
-function insertExtracted(result, flat) {
-    // Default every detected color to Draw; the user assigns Cut/Crease per colour
-    // afterwards (select the coloured layer → Cut/Score/Fold). Remember last choice.
+function renderExtractPanel(result) {
+    const panel = document.getElementById('visionExtractPanel');
+    const list = document.getElementById('vepColors');
+    const applyBtn = document.getElementById('btnVepApply');
+    if (!panel || !list) return;
+    list.innerHTML = '';
+
+    if (!result.colors.length) {
+        list.innerHTML = '<div class="vep-empty">No distinct ink detected against this substrate — re-crop tighter to the drawing or improve lighting.</div>';
+        if (applyBtn) applyBtn.style.display = 'none';
+    } else {
+        if (applyBtn) applyBtn.style.display = '';
+        result.colors.forEach((col, i) => {
+            const [r, g, b] = col.rgb;
+            const hex = rgbHex(col.rgb);
+            // similar to an earlier colour? offer a merge (algorithm's "doubt")
+            let simTo = -1;
+            for (let j = 0; j < i; j++) { if (rgbDist(col.rgb, result.colors[j].rgb) < 26) { simTo = j; break; } }
+            const suggested = _lastOpForColor[hex] || 'draw';
+            const opts = OP_OPTIONS.map(o => `<option value="${o.v}" ${o.v === suggested ? 'selected' : ''}>${o.label}</option>`).join('');
+            const row = document.createElement('div');
+            row.className = 'vep-row';
+            row.innerHTML =
+                `<span class="vep-swatch" style="background:rgb(${r},${g},${b})"></span>` +
+                `<span class="vep-label"><b>${hex}</b><small>${col.name} · ${col.paths.length} stroke${col.paths.length === 1 ? '' : 's'}</small></span>` +
+                (simTo >= 0 ? `<button class="vep-merge" data-i="${i}" data-j="${simTo}" title="Looks like ${rgbHex(result.colors[simTo].rgb)} — merge them">merge ↑</button>` : '') +
+                `<select data-idx="${i}">${opts}</select>`;
+            list.appendChild(row);
+        });
+    }
+    panel.classList.remove('hidden');
+}
+
+// Merge colour i into colour j (stroke-weighted colour), then re-render.
+function mergeExtractColors(i, j) {
+    const cols = _extractResult.colors;
+    if (!cols[i] || !cols[j]) return;
+    const a = cols[j], b = cols[i];
+    const wa = a.paths.length || 1, wb = b.paths.length || 1;
+    a.rgb = a.rgb.map((v, k) => Math.round((v * wa + b.rgb[k] * wb) / (wa + wb)));
+    a.paths = a.paths.concat(b.paths);
+    a.count = (a.count || 0) + (b.count || 0);
+    cols.splice(i, 1);
+    renderExtractPanel(_extractResult);
+}
+
+function applyExtractedLayers() {
+    if (!_extractResult) return;
     const assignments = {};
-    result.colors.forEach((col, i) => { assignments[i] = _lastOpForColor[col.name] || 'draw'; });
-    const svg = buildSVG(result, assignments);
+    document.querySelectorAll('#vepColors select').forEach(sel => {
+        const idx = parseInt(sel.getAttribute('data-idx'), 10);
+        assignments[idx] = sel.value;
+        const col = _extractResult.colors[idx];
+        if (col) _lastOpForColor[rgbHex(col.rgb)] = sel.value;
+    });
+    const svg = buildSVG(_extractResult, assignments);
     canvasEditor.importSVG(svg);
-    // faint reference underlay, aligned to the placed page rectangle
-    if (flat) {
+    // faint reference underlay aligned to the placed page rectangle
+    if (_extractFlat) {
         const bedW = canvasEditor.view?.bedW || 960, bedH = canvasEditor.view?.bedH || 770;
-        const { out, paperW, paperH } = flat;
+        const { out, paperW, paperH } = _extractFlat;
         const box = canvasEditor._lastImportBox;
         const ref = new Image();
         ref.onload = () => {
@@ -2133,7 +2183,8 @@ function insertExtracted(result, flat) {
         };
         ref.src = out.toDataURL('image/png');
     }
-    log(`Inserted ${result.colors.length} colour layer${result.colors.length === 1 ? '' : 's'} — select a layer to set Cut / Crease / Draw.`, 'success');
+    const n = Object.values(assignments).filter(v => v && v !== 'ignore').length;
+    log(`Inserted ${n} colour layer${n === 1 ? '' : 's'} to canvas.`, 'success');
     if (window.switchTab) window.switchTab('draw');
     closeVisionModal();
 }
@@ -2142,6 +2193,14 @@ document.getElementById('visionPaperSize')?.addEventListener('change', (e) => {
     document.getElementById('visionCustomSize').style.display = e.target.value === 'custom' ? 'flex' : 'none';
 });
 document.getElementById('btnVisionExtract')?.addEventListener('click', runExtractDrawing);
+document.getElementById('btnVepApply')?.addEventListener('click', applyExtractedLayers);
+document.getElementById('btnVepBack')?.addEventListener('click', () => {
+    document.getElementById('visionExtractPanel')?.classList.add('hidden');
+});
+document.getElementById('vepColors')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.vep-merge');
+    if (btn) mergeExtractColors(parseInt(btn.dataset.i, 10), parseInt(btn.dataset.j, 10));
+});
 
 // Upload a saved image straight from the PC (same detect → crop → flatten flow)
 document.getElementById('btnVisionUpload')?.addEventListener('click', () => {
