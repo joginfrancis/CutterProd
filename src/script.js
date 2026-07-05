@@ -2106,6 +2106,7 @@ function runExtractDrawing() {
                 _wiz = { page: 0, bg: sub.rgb, accuracy: 0.5, simplify: 0.4, skel: null, eyedrop: false, assignments: {}, view: null };
                 reanalyzeWiz();
                 document.getElementById('visionExtractPanel').classList.remove('hidden');
+                const f = document.querySelector('.vision-footer'); if (f) f.style.display = 'none'; // one window, one footer
                 renderWizard();
                 if (pill) pill.textContent = '';
             } catch (err) {
@@ -2130,7 +2131,6 @@ function reanalyzeWiz() {
 
 function renderWizard() {
     const w = _wiz; if (!w) return;
-    document.getElementById('wizTitle').textContent = 'Vision — Extract drawing';
     // clickable stepper
     document.getElementById('wizDots').innerHTML = WIZ_PAGES.map((name, i) =>
         `<button class="wiz-tab ${i === w.page ? 'on' : ''}" data-p="${i}">${i + 1}. ${name}</button>`).join('');
@@ -2138,7 +2138,8 @@ function renderWizard() {
         b.onclick = () => { _wiz.page = +b.dataset.p; renderWizard(); });
 
     const prev = document.getElementById('wizPrev'), next = document.getElementById('wizNext');
-    prev.disabled = w.page === 0;
+    prev.disabled = false;
+    prev.innerHTML = w.page === 0 ? '&lsaquo; Crop' : 'Back';
     const last = w.page === WIZ_PAGES.length - 1;
     next.textContent = last ? 'Insert to Canvas' : 'Next →';
     next.disabled = !w.skel || !w.skel.colors.length;
@@ -2313,7 +2314,16 @@ function wizNext() {
     if (w.page < WIZ_PAGES.length - 1) { w.page++; renderWizard(); return; }
     wizInsert();
 }
-function wizPrev() { if (_wiz && _wiz.page > 0) { _wiz.page--; renderWizard(); } }
+function wizPrev() {
+    if (!_wiz) return;
+    if (_wiz.page > 0) { _wiz.page--; renderWizard(); return; }
+    exitExtractToCrop(); // page 0 → back to the crop view (same window)
+}
+// Show the crop view + footer, hide the extract phases (no window change).
+function exitExtractToCrop() {
+    document.getElementById('visionExtractPanel')?.classList.add('hidden');
+    const f = document.querySelector('.vision-footer'); if (f) f.style.display = '';
+}
 
 function wizInsert() {
     const w = _wiz; if (!w || !w.skel) return;
@@ -2347,9 +2357,6 @@ document.getElementById('visionPaperSize')?.addEventListener('change', (e) => {
 document.getElementById('btnVisionExtract')?.addEventListener('click', runExtractDrawing);
 document.getElementById('wizNext')?.addEventListener('click', wizNext);
 document.getElementById('wizPrev')?.addEventListener('click', wizPrev);
-document.getElementById('btnVepBack')?.addEventListener('click', () => {
-    document.getElementById('visionExtractPanel')?.classList.add('hidden'); _wiz = null;
-});
 
 // Upload a saved image straight from the PC (same detect → crop → flatten flow)
 document.getElementById('btnVisionUpload')?.addEventListener('click', () => {
@@ -2381,6 +2388,7 @@ function resetVisionToConnect() {
     if (qrContainer) qrContainer.style.display = 'flex';
     document.getElementById('visionLoupe').style.display = 'none';
     document.getElementById('visionExtractPanel')?.classList.add('hidden');
+    const f = document.querySelector('.vision-footer'); if (f) f.style.display = '';
     _extractResult = null;
     _extractFlat = null;
     _wiz = null;
