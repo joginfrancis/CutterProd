@@ -2996,6 +2996,29 @@ body .btn-action { /* Specificity override */
 .vep-apply:hover { filter: brightness(1.06); }
 .vep-empty { color: var(--danger); font-size: 0.8rem; text-align: center; padding: 1rem; }
 
+/* ── Vectorization wizard ── */
+.wiz-dots { display: flex; gap: 6px; justify-content: center; }
+.wiz-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--border-dark); transition: background 0.15s, transform 0.15s; }
+.wiz-dots i.on { background: var(--accent); transform: scale(1.25); }
+.wiz-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.7rem; }
+.wiz-lead { font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; }
+.wiz-bg-row { display: flex; align-items: center; gap: 0.7rem; background: #f8fafc; border: 1px solid var(--border); border-radius: 9px; padding: 0.6rem 0.7rem; }
+.wiz-bg-swatch { width: 34px; height: 34px; border-radius: 8px; border: 1px solid rgba(15,23,42,0.15); }
+.wiz-bg-info b { font-family: ui-monospace, monospace; }
+.wiz-bg-info small { display: block; color: var(--text-muted); font-size: 0.7rem; }
+.wiz-eyedrop { margin-left: auto; padding: 0.4rem 0.6rem; border: 1px solid var(--border-dark); border-radius: 8px; background: #fff; color: var(--text-main); font-size: 0.76rem; cursor: pointer; }
+.wiz-eyedrop.active { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
+.wiz-slider-row { display: flex; flex-direction: column; gap: 0.35rem; }
+.wiz-slider-row .wiz-slabels { display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--text-muted); }
+.wiz-slider-row input[type=range] { width: 100%; accent-color: var(--accent); }
+.wiz-slider-row .wiz-sval { text-align: center; font-size: 0.74rem; font-weight: 600; color: var(--accent); }
+.wiz-nav { display: flex; gap: 0.6rem; }
+.wiz-nav .vep-apply { flex: 1; }
+.wiz-btn-ghost { padding: 0.65rem 1rem; border: 1px solid var(--border-dark); border-radius: 10px; background: #fff; color: var(--text-main); font-size: 0.84rem; font-weight: 600; cursor: pointer; }
+.wiz-btn-ghost:hover { background: #f1f5f9; }
+.wiz-btn-ghost:disabled { opacity: 0.4; cursor: default; }
+.wiz-preview { width: 100%; height: 170px; border-radius: 10px; border: 1px solid var(--border); display: block; background: #f8fafc; }
+
 /* Bounding-box size chip in the properties inspector */
 .size-chip {
     font-family: ui-monospace, monospace;

@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UrumiCutter V2 - Control Dashboard</title>
-    <link rel="stylesheet" href="styles.css?v=19">
+    <link rel="stylesheet" href="styles.css?v=20">
     <!-- Google Font for Outfit and Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -663,14 +663,18 @@
                         <button id="btnVisionNewPhoto" class="vision-new-photo" title="Discard and capture / upload a different photo">&larr; New photo</button>
                         <p id="visionCropHint" class="vision-hint">Scroll to zoom · drag to pan · hover a corner to inspect, drag to adjust</p>
 
-                        <!-- Colour → operation assignment (shown after Detect colours) -->
+                        <!-- Guided vectorization wizard (shown after Detect colours) -->
                         <div id="visionExtractPanel" class="vision-extract-panel hidden">
                             <div class="vep-header">
-                                <span>Detected colours — assign each to an operation</span>
-                                <button id="btnVepBack" class="vep-back" title="Back to crop">&times;</button>
+                                <span id="wizTitle">Background</span>
+                                <button id="btnVepBack" class="vep-back" title="Close">&times;</button>
                             </div>
-                            <div id="vepColors" class="vep-colors"></div>
-                            <button id="btnVepApply" class="vep-apply">Insert to Canvas</button>
+                            <div id="wizDots" class="wiz-dots"></div>
+                            <div id="wizBody" class="wiz-body"></div>
+                            <div class="wiz-nav">
+                                <button id="wizPrev" class="wiz-btn-ghost">Back</button>
+                                <button id="wizNext" class="vep-apply">Next</button>
+                            </div>
                         </div>
                     </div>
 
@@ -702,7 +706,7 @@
     <!-- SCRIPTS -->
     <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="trace_skeleton.js"></script>
-    <script type="module" src="script.js?v=40"></script>
+    <script type="module" src="script.js?v=41"></script>
 
 </body>
 </html>

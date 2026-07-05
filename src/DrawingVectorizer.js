@@ -74,13 +74,14 @@ function rdp(pts, eps) {
     if (dmax <= eps || idx === -1) return [a, b];
     return rdp(pts.slice(0, idx + 1), eps).slice(0, -1).concat(rdp(pts.slice(idx), eps));
 }
-function simplify(poly) {
+// epsScale: multiplies the adaptive RDP epsilon (higher = coarser/simpler).
+function simplify(poly, epsScale = 1) {
     const pts = dedupe(poly.map(([x, y]) => ({ x, y })));
     if (pts.length <= 2) return pts;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const p of pts) { if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y; if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y; }
     const diag = Math.hypot(maxX - minX, maxY - minY);
-    const eps = Math.max(0.8, Math.min(4, diag * 0.01 + pts.length * 0.004));
+    const eps = Math.max(0.4, (diag * 0.01 + pts.length * 0.004) * epsScale);
     const s = rdp(pts, eps);
     return s.length < 2 ? pts : s;
 }
@@ -97,11 +98,12 @@ function straightness(a, b, c) {
 // straightness so sharp corners stay sharp, and (b) length-capped to 1/3 of the
 // segment so gentle curves can never overshoot/balloon outward. The canvas importer
 // tessellates the resulting C-segments back to points for editing/CAM.
-function toPathD(pts) {
+// tension (0..~1): smoothing strength. 0 → straight polyline (accurate), higher → rounder.
+function toPathD(pts, tension = 0.9) {
     if (!pts.length) return '';
     if (pts.length === 1) return `M ${num(pts[0].x)},${num(pts[0].y)}`;
     if (pts.length === 2) return `M ${num(pts[0].x)},${num(pts[0].y)} L ${num(pts[1].x)},${num(pts[1].y)}`;
-    const T = 0.9;
+    const T = tension;
     const cap = (hx, hy, max) => { const l = Math.hypot(hx, hy); return l > max && l > 0 ? [hx * max / l, hy * max / l] : [hx, hy]; };
     let d = `M ${num(pts[0].x)},${num(pts[0].y)}`;
     for (let i = 0; i < pts.length - 1; i++) {
@@ -160,14 +162,47 @@ function mergeCentroids(cents, hueTolRad, cMin) {
     return out;
 }
 
-// ── main analysis ──────────────────────────────────────────────────────────
-// sourceCanvas: the flattened page raster. paperW/paperH: mm dimensions.
-// opts.inkThreshold: ΔE from substrate to count as ink (default adaptive).
-// Returns { w, h, paperW, paperH, colors: [{ rgb, name, count, paths:[d…] }] }.
-export function analyzeDrawing(sourceCanvas, paperW, paperH, opts = {}) {
+// Estimate the substrate/paper colour (median of an outer border ring). Returns
+// { rgb, working:{w,h} } — used by the wizard's "confirm background" step.
+export function estimateSubstrate(sourceCanvas) {
+    const sw = sourceCanvas.width, sh = sourceCanvas.height;
+    const scale = Math.min(1, MAX_EDGE / Math.max(sw, sh));
+    const w = Math.max(1, Math.round(sw * scale)), h = Math.max(1, Math.round(sh * scale));
+    const work = document.createElement('canvas'); work.width = w; work.height = h;
+    const wctx = work.getContext('2d', { willReadFrequently: true });
+    wctx.drawImage(sourceCanvas, 0, 0, w, h);
+    const data = wctx.getImageData(0, 0, w, h).data;
+    const bw = Math.max(2, Math.round(Math.min(w, h) * 0.06));
+    const rs = [], gs = [], bs = [];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        if (x < bw || x >= w - bw || y < bw || y >= h - bw) { const j = (y * w + x) * 4; rs.push(data[j]); gs.push(data[j + 1]); bs.push(data[j + 2]); }
+    }
+    const med = a => { a.sort((p, q) => p - q); return a[a.length >> 1]; };
+    return { rgb: [med(rs), med(gs), med(bs)], working: { w, h } };
+}
+
+// Walk an endpoint outward along its tangent until it leaves the ink mask (recovers
+// the ~½ stroke-width the medial axis retracts). mask: Uint8Array (w*h), 1 = ink.
+function extendEnd(end, prev, mask, w, h, maxExt) {
+    let dx = end.x - prev.x, dy = end.y - prev.y;
+    const l = Math.hypot(dx, dy); if (l < 1e-3) return end;
+    dx /= l; dy /= l;
+    let best = end;
+    for (let s = 1; s <= maxExt; s++) {
+        const x = end.x + dx * s, y = end.y + dy * s;
+        const xi = Math.round(x), yi = Math.round(y);
+        if (xi < 0 || yi < 0 || xi >= w || yi >= h || !mask[yi * w + xi]) break;
+        best = { x, y };
+    }
+    return best;
+}
+
+// ── Heavy pass: substrate → ink mask → colour clusters → raw skeleton polylines.
+// opts.bg = [r,g,b] substrate override. Returns a result carrying per-colour raw
+// polylines + binary mask so the cheap refine pass can re-run on slider changes.
+export function analyzeSkeletons(sourceCanvas, paperW, paperH, opts = {}) {
     if (!window.TraceSkeleton) throw new Error('TraceSkeleton library not loaded');
 
-    // 1. downscale to working raster
     const sw = sourceCanvas.width, sh = sourceCanvas.height;
     const scale = Math.min(1, MAX_EDGE / Math.max(sw, sh));
     const w = Math.max(1, Math.round(sw * scale)), h = Math.max(1, Math.round(sh * scale));
@@ -177,101 +212,105 @@ export function analyzeDrawing(sourceCanvas, paperW, paperH, opts = {}) {
     const data = wctx.getImageData(0, 0, w, h).data;
     const N = w * h;
 
-    // precompute Lab per pixel
     const lab = new Float32Array(N * 3);
-    for (let i = 0; i < N; i++) {
-        const j = i * 4, l = rgbToLab(data[j], data[j + 1], data[j + 2]);
-        lab[i * 3] = l[0]; lab[i * 3 + 1] = l[1]; lab[i * 3 + 2] = l[2];
-    }
+    for (let i = 0; i < N; i++) { const j = i * 4, l = rgbToLab(data[j], data[j + 1], data[j + 2]); lab[i * 3] = l[0]; lab[i * 3 + 1] = l[1]; lab[i * 3 + 2] = l[2]; }
 
-    // 2. substrate estimate — median Lab of an outer border ring
-    const ring = [];
-    const bw = Math.max(2, Math.round(Math.min(w, h) * 0.06));
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-        if (x < bw || x >= w - bw || y < bw || y >= h - bw) {
-            const i = y * w + x; ring.push([lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]]);
-        }
+    // substrate: override or border-ring median
+    let bg;
+    if (opts.bg) { bg = rgbToLab(opts.bg[0], opts.bg[1], opts.bg[2]); }
+    else {
+        const ring = [];
+        const bw = Math.max(2, Math.round(Math.min(w, h) * 0.06));
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (x < bw || x >= w - bw || y < bw || y >= h - bw) { const i = y * w + x; ring.push([lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]]); }
+        const med = axis => { const v = ring.map(p => p[axis]).sort((a, b) => a - b); return v[v.length >> 1]; };
+        bg = [med(0), med(1), med(2)];
     }
-    const med = axis => { const v = ring.map(p => p[axis]).sort((a, b) => a - b); return v[v.length >> 1]; };
-    const bg = [med(0), med(1), med(2)];
+    const bgRgb = opts.bg || (() => { // recover an rgb for the chip
+        const rs = [], gs = [], bs = []; const bw = Math.max(2, Math.round(Math.min(w, h) * 0.06));
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (x < bw || x >= w - bw || y < bw || y >= h - bw) { const j = (y * w + x) * 4; rs.push(data[j]); gs.push(data[j + 1]); bs.push(data[j + 2]); }
+        const md = a => { a.sort((p, q) => p - q); return a[a.length >> 1]; }; return [md(rs), md(gs), md(bs)];
+    })();
 
-    // 3. ink mask + samples
     const inkThresh = opts.inkThreshold || 16;
     const inkIdx = [];
-    for (let i = 0; i < N; i++) {
-        const d = deltaE([lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]], bg);
-        if (d > inkThresh) inkIdx.push(i);
-    }
-    if (!inkIdx.length) return { w, h, paperW, paperH, colors: [] };
+    const inkMask = new Uint8Array(N);
+    for (let i = 0; i < N; i++) { if (deltaE([lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]], bg) > inkThresh) { inkIdx.push(i); inkMask[i] = 1; } }
+    if (!inkIdx.length) return { w, h, paperW, paperH, bgRgb, colors: [] };
 
-    // subsample for clustering
-    const cap = 30000;
-    const step = Math.max(1, Math.floor(inkIdx.length / cap));
+    const cap = 30000, stepS = Math.max(1, Math.floor(inkIdx.length / cap));
     const samples = [];
-    for (let s = 0; s < inkIdx.length; s += step) { const i = inkIdx[s]; samples.push([lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]]); }
+    for (let s = 0; s < inkIdx.length; s += stepS) { const i = inkIdx[s]; samples.push([lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]]); }
+    const cents = mergeCentroids(kmeans(samples, K_INIT), HUE_MERGE_RAD, CHROMA_MIN);
 
-    let cents = mergeCentroids(kmeans(samples, K_INIT), HUE_MERGE_RAD, CHROMA_MIN);
-
-    // 4. assign every ink pixel to nearest centroid; count
     const counts = new Array(cents.length).fill(0);
     const assign = new Int32Array(N).fill(-1);
     for (const i of inkIdx) {
-        let bi = 0, bd = Infinity;
-        const pl = [lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]];
+        let bi = 0, bd = Infinity; const pl = [lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]];
         for (let c = 0; c < cents.length; c++) { const d = deltaE(pl, cents[c]); if (d < bd) { bd = d; bi = c; } }
         assign[i] = bi; counts[bi]++;
     }
-    // drop tiny clusters
     const minCount = inkIdx.length * MIN_CLUSTER_FRAC;
     const keep = cents.map((_, c) => counts[c] >= minCount);
 
-    // representative RGB per kept cluster = CHROMA-WEIGHTED mean of member pixels.
-    // Anti-aliased stroke edges blend toward the paper and would desaturate a plain
-    // mean; weighting by saturation pulls the swatch toward the vivid stroke core.
     const rgbAcc = cents.map(() => [0, 0, 0, 0]);
     for (const i of inkIdx) {
         const c = assign[i]; if (!keep[c]) continue;
         const j = i * 4, r = data[j], g = data[j + 1], b = data[j + 2];
         const chroma = (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
-        const wgt = chroma * chroma + 0.04; // floor keeps neutral (black/gray) inks working
+        const wgt = chroma * chroma + 0.04;
         const a = rgbAcc[c]; a[0] += r * wgt; a[1] += g * wgt; a[2] += b * wgt; a[3] += wgt;
     }
 
-    // 5. per kept cluster: skeletonize → polylines → simplify
     const colors = [];
     for (let c = 0; c < cents.length; c++) {
         if (!keep[c] || rgbAcc[c][3] === 0) continue;
         const rgb = [Math.round(rgbAcc[c][0] / rgbAcc[c][3]), Math.round(rgbAcc[c][1] / rgbAcc[c][3]), Math.round(rgbAcc[c][2] / rgbAcc[c][3])];
-        // Drop clusters whose color sits too close to the substrate — these are
-        // paper/lighting-gradient leakage picked up by the ink threshold, not real ink.
         if (deltaE(rgbToLab(rgb[0], rgb[1], rgb[2]), bg) < 22) continue;
 
-        // white-on-black mask canvas for this cluster
+        const mask = new Uint8Array(N);
         const mc = document.createElement('canvas'); mc.width = w; mc.height = h;
-        const mx = mc.getContext('2d');
-        const md = mx.createImageData(w, h);
-        for (let i = 0; i < N; i++) {
-            const on = assign[i] === c ? 255 : 0;
-            const j = i * 4; md.data[j] = on; md.data[j + 1] = on; md.data[j + 2] = on; md.data[j + 3] = 255;
-        }
+        const mx = mc.getContext('2d'); const md = mx.createImageData(w, h);
+        for (let i = 0; i < N; i++) { const on = assign[i] === c ? 255 : 0; if (on) mask[i] = 1; const j = i * 4; md.data[j] = on; md.data[j + 1] = on; md.data[j + 2] = on; md.data[j + 3] = 255; }
         mx.putImageData(md, 0, 0);
 
         const res = window.TraceSkeleton.fromCanvas(mc);
-        const paths = [];
-        for (const poly of (res.polylines || [])) {
-            if (poly.length < 6) continue; // drop specks
-            const s = simplify(poly);
-            if (s.length < 2) continue;
-            paths.push(toPathD(s));
-        }
-        if (!paths.length) continue;
-        const labC = rgbToLab(rgb[0], rgb[1], rgb[2]);
-        colors.push({ rgb, name: nearestName(labC), count: counts[c], paths });
+        const rawPolys = (res.polylines || []).filter(p => p.length >= 6);
+        if (!rawPolys.length) continue;
+        colors.push({ rgb, name: nearestName(rgbToLab(rgb[0], rgb[1], rgb[2])), count: counts[c], rawPolys, mask });
     }
-
-    // sort by prominence
     colors.sort((a, b) => b.count - a.count);
-    return { w, h, paperW, paperH, colors };
+    return { w, h, paperW, paperH, bgRgb, colors };
+}
+
+// ── Cheap pass: turn raw skeleton polylines into refined path strings.
+// accuracy (0..1): Accurate↔Smooth (high = follow closely, less rounding).
+// simplify (0..1): point reduction (high = fewer points / coarser).
+export function refinePaths(skel, opts = {}) {
+    const accuracy = opts.accuracy != null ? opts.accuracy : 0.5;
+    const simp = opts.simplify != null ? opts.simplify : 0.4;
+    const epsScale = 0.4 + simp * 3.0;              // 0.4 → ~3.4×
+    const tension = (1 - accuracy) * 0.95;          // accurate → ~0 (crisp), smooth → ~0.95
+    const maxExt = Math.round(2 + (1 - accuracy) * 4); // extend endpoints a touch more when smoothing
+    for (const col of skel.colors) {
+        const paths = [];
+        for (const poly of col.rawPolys) {
+            let s = simplify(poly, epsScale);
+            if (s.length < 2) continue;
+            // recover retracted / hooked endpoints against this colour's ink mask
+            if (s.length >= 2 && col.mask) {
+                s[0] = extendEnd(s[0], s[1], col.mask, skel.w, skel.h, maxExt);
+                s[s.length - 1] = extendEnd(s[s.length - 1], s[s.length - 2], col.mask, skel.w, skel.h, maxExt);
+            }
+            paths.push(toPathD(s, tension));
+        }
+        col.paths = paths;
+    }
+    return skel;
+}
+
+// Convenience wrapper (heavy + refine with defaults) for one-shot callers.
+export function analyzeDrawing(sourceCanvas, paperW, paperH, opts = {}) {
+    return refinePaths(analyzeSkeletons(sourceCanvas, paperW, paperH, opts), opts);
 }
 
 // Build an SVG from color→method assignments. `assignments` maps color index

@@ -37,7 +37,7 @@ import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
 import { CanvasEditor } from './CanvasEditor.js?v=12';
-import { analyzeDrawing, buildSVG } from './DrawingVectorizer.js?v=6';
+import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG } from './DrawingVectorizer.js?v=7';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -2083,11 +2083,13 @@ const OP_OPTIONS = [
 const _lastOpForColor = {};
 
 function rgbHex(rgb) { return '#' + rgb.map(v => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('').toUpperCase(); }
-// Rough perceptual distance for the "similar colours?" merge hint.
 function rgbDist(a, b) { const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2]; return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db) / 3; }
 
-// Detect colours, then show the (light-themed) assignment panel. Insert happens
-// only when the user confirms in the panel.
+// ── 5-step vectorization wizard ──────────────────────────────────────────────
+// Steps: 0 background · 1 colours · 2 accuracy · 3 simplify · 4 assign + insert.
+const WIZ_STEPS = ['Background', 'Colours', 'Detail', 'Simplify', 'Assign & insert'];
+let _wiz = null;
+
 function runExtractDrawing() {
     if (!canvasEditor) return;
     const pill = document.getElementById('visionCropStatus');
@@ -2095,15 +2097,17 @@ function runExtractDrawing() {
         if (pill) { pill.textContent = 'Flattening…'; pill.style.color = '#fbbf24'; }
         const res = flattenCroppedPage();
         if (!res) return;
-        if (pill) pill.textContent = 'Detecting colours…';
+        if (pill) pill.textContent = 'Reading page…';
         setTimeout(() => {
             try {
                 _extractFlat = res;
-                _extractResult = analyzeDrawing(res.out, res.paperW, res.paperH);
-                renderExtractPanel(_extractResult);
+                const sub = estimateSubstrate(res.out);
+                _wiz = { step: 0, bg: sub.rgb, accuracy: 0.5, simplify: 0.4, skel: null, eyedrop: false, assignments: {} };
+                document.getElementById('visionExtractPanel').classList.remove('hidden');
+                renderWizard();
                 if (pill) pill.textContent = '';
             } catch (err) {
-                console.error('analyzeDrawing:', err);
+                console.error('wizard start:', err);
                 if (pill) { pill.textContent = 'Extraction failed.'; pill.style.color = '#ef4444'; }
             }
         }, 30);
@@ -2113,64 +2117,165 @@ function runExtractDrawing() {
     }
 }
 
-function renderExtractPanel(result) {
-    const panel = document.getElementById('visionExtractPanel');
-    const list = document.getElementById('vepColors');
-    const applyBtn = document.getElementById('btnVepApply');
-    if (!panel || !list) return;
-    list.innerHTML = '';
+function renderWizard() {
+    const w = _wiz; if (!w) return;
+    document.getElementById('wizTitle').textContent = `Step ${w.step + 1} · ${WIZ_STEPS[w.step]}`;
+    document.getElementById('wizDots').innerHTML = WIZ_STEPS.map((_, i) => `<i class="${i === w.step ? 'on' : ''}"></i>`).join('');
+    const prev = document.getElementById('wizPrev'), next = document.getElementById('wizNext');
+    prev.disabled = w.step === 0;
+    const last = w.step === WIZ_STEPS.length - 1;
+    next.textContent = last ? 'Insert to Canvas' : 'Next';
+    next.disabled = (w.step >= 1 && (!w.skel || !w.skel.colors.length));
+    const body = document.getElementById('wizBody');
+    body.innerHTML = '';
+    if (w.step === 0) renderWizBackground(body);
+    else if (w.step === 1) renderWizColours(body);
+    else if (w.step === 2) renderWizSlider(body, 'accuracy', 'Smooth', 'Accurate', 'How closely the vectors follow the drawn line.');
+    else if (w.step === 3) renderWizSlider(body, 'simplify', 'Detailed', 'Simplified', 'Point reduction — fewer points make cleaner, lighter paths.');
+    else if (w.step === 4) renderWizAssign(body);
+}
 
-    if (!result.colors.length) {
-        list.innerHTML = '<div class="vep-empty">No distinct ink detected against this substrate — re-crop tighter to the drawing or improve lighting.</div>';
-        if (applyBtn) applyBtn.style.display = 'none';
-    } else {
-        if (applyBtn) applyBtn.style.display = '';
-        result.colors.forEach((col, i) => {
-            const [r, g, b] = col.rgb;
-            const hex = rgbHex(col.rgb);
-            // similar to an earlier colour? offer a merge (algorithm's "doubt")
-            let simTo = -1;
-            for (let j = 0; j < i; j++) { if (rgbDist(col.rgb, result.colors[j].rgb) < 26) { simTo = j; break; } }
-            const suggested = _lastOpForColor[hex] || 'draw';
-            const opts = OP_OPTIONS.map(o => `<option value="${o.v}" ${o.v === suggested ? 'selected' : ''}>${o.label}</option>`).join('');
-            const row = document.createElement('div');
-            row.className = 'vep-row';
-            row.innerHTML =
-                `<span class="vep-swatch" style="background:rgb(${r},${g},${b})"></span>` +
-                `<span class="vep-label"><b>${hex}</b><small>${col.name} · ${col.paths.length} stroke${col.paths.length === 1 ? '' : 's'}</small></span>` +
-                (simTo >= 0 ? `<button class="vep-merge" data-i="${i}" data-j="${simTo}" title="Looks like ${rgbHex(result.colors[simTo].rgb)} — merge them">merge ↑</button>` : '') +
-                `<select data-idx="${i}">${opts}</select>`;
-            list.appendChild(row);
-        });
+// preview canvas: fit skel (or flattened image) and paint faint image + vectors
+function fitPreviewCanvas(cv) {
+    const dpr = window.devicePixelRatio || 1;
+    const wCss = cv.clientWidth || cv.parentElement.clientWidth || 300;
+    cv.width = Math.round(wCss * dpr); cv.height = Math.round(170 * dpr);
+    return dpr;
+}
+function drawWizPreview() {
+    const cv = document.getElementById('wizPreviewCanvas'); if (!cv || !_extractFlat) return;
+    fitPreviewCanvas(cv);
+    const ctx = cv.getContext('2d');
+    const img = _extractFlat.out;
+    const refW = _wiz.skel ? _wiz.skel.w : img.width, refH = _wiz.skel ? _wiz.skel.h : img.height;
+    const scale = Math.min(cv.width / refW, cv.height / refH);
+    const ox = (cv.width - refW * scale) / 2, oy = (cv.height - refH * scale) / 2;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.globalAlpha = 0.3; ctx.drawImage(img, ox, oy, refW * scale, refH * scale); ctx.globalAlpha = 1;
+    cv._fit = { scale, ox, oy, refW, refH };
+    if (!_wiz.skel) return;
+    ctx.save(); ctx.translate(ox, oy); ctx.scale(scale, scale);
+    ctx.lineWidth = 1.6 / scale; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (const col of _wiz.skel.colors) {
+        ctx.strokeStyle = `rgb(${col.rgb.join(',')})`;
+        for (const d of (col.paths || [])) { try { ctx.stroke(new Path2D(d)); } catch (e) {} }
     }
-    panel.classList.remove('hidden');
+    ctx.restore();
 }
 
-// Merge colour i into colour j (stroke-weighted colour), then re-render.
-function mergeExtractColors(i, j) {
-    const cols = _extractResult.colors;
-    if (!cols[i] || !cols[j]) return;
-    const a = cols[j], b = cols[i];
-    const wa = a.paths.length || 1, wb = b.paths.length || 1;
-    a.rgb = a.rgb.map((v, k) => Math.round((v * wa + b.rgb[k] * wb) / (wa + wb)));
-    a.paths = a.paths.concat(b.paths);
-    a.count = (a.count || 0) + (b.count || 0);
-    cols.splice(i, 1);
-    renderExtractPanel(_extractResult);
+function renderWizBackground(body) {
+    const hex = rgbHex(_wiz.bg);
+    body.innerHTML =
+        `<div class="wiz-lead">This is the paper colour I'll treat as background and ignore. Approve it, or tap <b>Pick</b> then click the image to choose a different spot.</div>
+         <div class="wiz-bg-row">
+            <span class="wiz-bg-swatch" style="background:rgb(${_wiz.bg.join(',')})"></span>
+            <span class="wiz-bg-info"><b>${hex}</b><small>detected substrate</small></span>
+            <button class="wiz-eyedrop ${_wiz.eyedrop ? 'active' : ''}" id="wizEyedrop">Pick</button>
+         </div>
+         <canvas id="wizPreviewCanvas" class="wiz-preview"></canvas>`;
+    drawWizPreview();
+    document.getElementById('wizEyedrop').onclick = (e) => { _wiz.eyedrop = !_wiz.eyedrop; e.target.classList.toggle('active', _wiz.eyedrop); };
+    const cv = document.getElementById('wizPreviewCanvas');
+    cv.style.cursor = 'crosshair';
+    cv.onclick = (ev) => {
+        if (!_wiz.eyedrop || !cv._fit) return;
+        const r = cv.getBoundingClientRect(); const dpr = cv.width / r.width;
+        const px = (ev.clientX - r.left) * dpr, py = (ev.clientY - r.top) * dpr;
+        const ix = (px - cv._fit.ox) / cv._fit.scale, iy = (py - cv._fit.oy) / cv._fit.scale;
+        const img = _extractFlat.out;
+        const sx = Math.round(ix * img.width / cv._fit.refW), sy = Math.round(iy * img.height / cv._fit.refH);
+        const tmp = document.createElement('canvas'); tmp.width = 1; tmp.height = 1;
+        const tc = tmp.getContext('2d'); tc.drawImage(img, sx, sy, 1, 1, 0, 0, 1, 1);
+        const d = tc.getImageData(0, 0, 1, 1).data;
+        _wiz.bg = [d[0], d[1], d[2]]; _wiz.eyedrop = false; _wiz.skel = null;
+        renderWizard();
+    };
 }
 
-function applyExtractedLayers() {
-    if (!_extractResult) return;
-    const assignments = {};
-    document.querySelectorAll('#vepColors select').forEach(sel => {
-        const idx = parseInt(sel.getAttribute('data-idx'), 10);
-        assignments[idx] = sel.value;
-        const col = _extractResult.colors[idx];
-        if (col) _lastOpForColor[rgbHex(col.rgb)] = sel.value;
+function renderWizColours(body) {
+    const cols = _wiz.skel ? _wiz.skel.colors : [];
+    if (!cols.length) { body.innerHTML = '<div class="vep-empty">No distinct ink detected — go Back and pick a better background, re-crop tighter, or improve lighting.</div>'; return; }
+    const rows = cols.map((col, i) => {
+        const hex = rgbHex(col.rgb);
+        let simTo = -1; for (let j = 0; j < i; j++) { if (rgbDist(col.rgb, cols[j].rgb) < 26) { simTo = j; break; } }
+        return `<div class="vep-row">
+            <span class="vep-swatch" style="background:rgb(${col.rgb.join(',')})"></span>
+            <span class="vep-label"><b>${hex}</b><small>${col.name} · ${(col.paths ? col.paths.length : 0)} stroke${(col.paths && col.paths.length === 1) ? '' : 's'}</small></span>
+            ${simTo >= 0 ? `<button class="vep-merge" data-i="${i}" data-j="${simTo}" title="Looks like ${rgbHex(cols[simTo].rgb)} — merge">merge ↑</button>` : ''}
+        </div>`;
+    }).join('');
+    body.innerHTML = `<div class="wiz-lead">Detected pen colours. Merge any that should be one, then continue.</div><div class="vep-colors">${rows}</div>`;
+    body.querySelectorAll('.vep-merge').forEach(btn => btn.onclick = () => {
+        const i = +btn.dataset.i, j = +btn.dataset.j, C = _wiz.skel.colors;
+        if (!C[i] || !C[j]) return;
+        const wa = C[j].count || 1, wb = C[i].count || 1;
+        C[j].rgb = C[j].rgb.map((v, k) => Math.round((v * wa + C[i].rgb[k] * wb) / (wa + wb)));
+        C[j].rawPolys = C[j].rawPolys.concat(C[i].rawPolys);
+        // union masks so endpoint extension still works
+        if (C[j].mask && C[i].mask) { const m = C[j].mask; const o = C[i].mask; for (let k = 0; k < m.length; k++) if (o[k]) m[k] = 1; }
+        C[j].count = wa + wb; C.splice(i, 1);
+        refinePaths(_wiz.skel, { accuracy: _wiz.accuracy, simplify: _wiz.simplify });
+        renderWizard();
     });
-    const svg = buildSVG(_extractResult, assignments);
-    canvasEditor.importSVG(svg);
-    // faint reference underlay aligned to the placed page rectangle
+}
+
+function renderWizSlider(body, key, leftLabel, rightLabel, desc) {
+    body.innerHTML =
+        `<canvas id="wizPreviewCanvas" class="wiz-preview"></canvas>
+         <div class="wiz-lead">${desc}</div>
+         <div class="wiz-slider-row">
+            <input type="range" min="0" max="100" value="${Math.round(_wiz[key] * 100)}" id="wizSlider">
+            <div class="wiz-slabels"><span>${leftLabel}</span><span>${rightLabel}</span></div>
+         </div>`;
+    drawWizPreview();
+    const slider = document.getElementById('wizSlider');
+    slider.oninput = () => {
+        _wiz[key] = slider.value / 100;
+        refinePaths(_wiz.skel, { accuracy: _wiz.accuracy, simplify: _wiz.simplify });
+        drawWizPreview();
+    };
+}
+
+function renderWizAssign(body) {
+    const cols = _wiz.skel.colors;
+    const rows = cols.map((col, i) => {
+        const hex = rgbHex(col.rgb);
+        const suggested = _wiz.assignments[i] || _lastOpForColor[hex] || 'draw';
+        const opts = OP_OPTIONS.map(o => `<option value="${o.v}" ${o.v === suggested ? 'selected' : ''}>${o.label}</option>`).join('');
+        return `<div class="vep-row">
+            <span class="vep-swatch" style="background:rgb(${col.rgb.join(',')})"></span>
+            <span class="vep-label"><b>${hex}</b><small>${col.name}</small></span>
+            <select data-idx="${i}">${opts}</select>
+        </div>`;
+    }).join('');
+    body.innerHTML = `<canvas id="wizPreviewCanvas" class="wiz-preview"></canvas><div class="wiz-lead">Assign each colour to a machine operation, then insert.</div><div class="vep-colors">${rows}</div>`;
+    drawWizPreview();
+    body.querySelectorAll('select').forEach(sel => sel.onchange = () => { _wiz.assignments[+sel.dataset.idx] = sel.value; });
+}
+
+function wizNext() {
+    const w = _wiz; if (!w) return;
+    if (w.step === 0) {
+        try {
+            w.skel = analyzeSkeletons(_extractFlat.out, _extractFlat.paperW, _extractFlat.paperH, { bg: w.bg });
+            refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify });
+        } catch (e) { console.error('analyzeSkeletons:', e); }
+        w.step = 1; renderWizard(); return;
+    }
+    if (w.step < WIZ_STEPS.length - 1) { w.step++; renderWizard(); return; }
+    wizInsert();
+}
+function wizPrev() { if (_wiz && _wiz.step > 0) { _wiz.step--; renderWizard(); } }
+
+function wizInsert() {
+    const w = _wiz; if (!w || !w.skel) return;
+    const assignments = {};
+    w.skel.colors.forEach((col, i) => {
+        const op = w.assignments[i] || _lastOpForColor[rgbHex(col.rgb)] || 'draw';
+        assignments[i] = op; _lastOpForColor[rgbHex(col.rgb)] = op;
+    });
+    canvasEditor.importSVG(buildSVG(w.skel, assignments));
     if (_extractFlat) {
         const bedW = canvasEditor.view?.bedW || 960, bedH = canvasEditor.view?.bedH || 770;
         const { out, paperW, paperH } = _extractFlat;
@@ -2178,8 +2283,8 @@ function applyExtractedLayers() {
         const ref = new Image();
         ref.onload = () => {
             const x = box ? box.x : (bedW - paperW) / 2, y = box ? box.y : (bedH - paperH) / 2;
-            const w = box ? box.w : paperW, h = box ? box.h : paperH;
-            canvasEditor.addImage(ref, x, y, w, h, { opacity: 0.25, background: true, name: 'Reference (flattened)' });
+            const wd = box ? box.w : paperW, ht = box ? box.h : paperH;
+            canvasEditor.addImage(ref, x, y, wd, ht, { opacity: 0.25, background: true, name: 'Reference (flattened)' });
         };
         ref.src = out.toDataURL('image/png');
     }
@@ -2193,13 +2298,10 @@ document.getElementById('visionPaperSize')?.addEventListener('change', (e) => {
     document.getElementById('visionCustomSize').style.display = e.target.value === 'custom' ? 'flex' : 'none';
 });
 document.getElementById('btnVisionExtract')?.addEventListener('click', runExtractDrawing);
-document.getElementById('btnVepApply')?.addEventListener('click', applyExtractedLayers);
+document.getElementById('wizNext')?.addEventListener('click', wizNext);
+document.getElementById('wizPrev')?.addEventListener('click', wizPrev);
 document.getElementById('btnVepBack')?.addEventListener('click', () => {
-    document.getElementById('visionExtractPanel')?.classList.add('hidden');
-});
-document.getElementById('vepColors')?.addEventListener('click', (e) => {
-    const btn = e.target.closest('.vep-merge');
-    if (btn) mergeExtractColors(parseInt(btn.dataset.i, 10), parseInt(btn.dataset.j, 10));
+    document.getElementById('visionExtractPanel')?.classList.add('hidden'); _wiz = null;
 });
 
 // Upload a saved image straight from the PC (same detect → crop → flatten flow)
@@ -2234,6 +2336,7 @@ function resetVisionToConnect() {
     document.getElementById('visionExtractPanel')?.classList.add('hidden');
     _extractResult = null;
     _extractFlat = null;
+    _wiz = null;
     const pill = document.getElementById('visionCropStatus');
     if (pill) pill.textContent = '';
     visionSourceImg = null; cropCorners = null; _activeCorner = -1;
