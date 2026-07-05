@@ -2085,9 +2085,10 @@ const _lastOpForColor = {};
 function rgbHex(rgb) { return '#' + rgb.map(v => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('').toUpperCase(); }
 function rgbDist(a, b) { const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2]; return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db) / 3; }
 
-// ── 5-step vectorization wizard ──────────────────────────────────────────────
-// Steps: 0 background · 1 colours · 2 accuracy · 3 simplify · 4 assign + insert.
-const WIZ_STEPS = ['Background', 'Colours', 'Detail', 'Simplify', 'Assign & insert'];
+// ── Single-window, 2-page extract (Connect is the modal's State A) ────────────
+// Page 0 "Detect": background + pen colours (+ merge).  Page 1 "Vectorize":
+// Detail/Simplify sliders + per-colour operation + Insert. Preview zooms/pans.
+const WIZ_PAGES = ['Detect', 'Vectorize'];
 let _wiz = null;
 
 function runExtractDrawing() {
@@ -2102,7 +2103,8 @@ function runExtractDrawing() {
             try {
                 _extractFlat = res;
                 const sub = estimateSubstrate(res.out);
-                _wiz = { step: 0, bg: sub.rgb, accuracy: 0.5, simplify: 0.4, skel: null, eyedrop: false, assignments: {} };
+                _wiz = { page: 0, bg: sub.rgb, accuracy: 0.5, simplify: 0.4, skel: null, eyedrop: false, assignments: {}, view: null };
+                reanalyzeWiz();
                 document.getElementById('visionExtractPanel').classList.remove('hidden');
                 renderWizard();
                 if (pill) pill.textContent = '';
@@ -2117,156 +2119,201 @@ function runExtractDrawing() {
     }
 }
 
-function renderWizard() {
+// Heavy stage: (re)run skeletonisation for the current background, then refine.
+function reanalyzeWiz() {
     const w = _wiz; if (!w) return;
-    document.getElementById('wizTitle').textContent = `Step ${w.step + 1} · ${WIZ_STEPS[w.step]}`;
-    document.getElementById('wizDots').innerHTML = WIZ_STEPS.map((_, i) => `<i class="${i === w.step ? 'on' : ''}"></i>`).join('');
-    const prev = document.getElementById('wizPrev'), next = document.getElementById('wizNext');
-    prev.disabled = w.step === 0;
-    const last = w.step === WIZ_STEPS.length - 1;
-    next.textContent = last ? 'Insert to Canvas' : 'Next';
-    next.disabled = (w.step >= 1 && (!w.skel || !w.skel.colors.length));
-    const body = document.getElementById('wizBody');
-    body.innerHTML = '';
-    if (w.step === 0) renderWizBackground(body);
-    else if (w.step === 1) renderWizColours(body);
-    else if (w.step === 2) renderWizSlider(body, 'accuracy', 'Smooth', 'Accurate', 'How closely the vectors follow the drawn line.');
-    else if (w.step === 3) renderWizSlider(body, 'simplify', 'Detailed', 'Simplified', 'Point reduction — fewer points make cleaner, lighter paths.');
-    else if (w.step === 4) renderWizAssign(body);
+    try {
+        w.skel = analyzeSkeletons(_extractFlat.out, _extractFlat.paperW, _extractFlat.paperH, { bg: w.bg });
+        refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify });
+    } catch (e) { console.error('analyzeSkeletons:', e); w.skel = null; }
 }
 
-// preview canvas: fit skel (or flattened image) and paint faint image + vectors
-function fitPreviewCanvas(cv) {
+function renderWizard() {
+    const w = _wiz; if (!w) return;
+    document.getElementById('wizTitle').textContent = 'Vision — Extract drawing';
+    // clickable stepper
+    document.getElementById('wizDots').innerHTML = WIZ_PAGES.map((name, i) =>
+        `<button class="wiz-tab ${i === w.page ? 'on' : ''}" data-p="${i}">${i + 1}. ${name}</button>`).join('');
+    document.getElementById('wizDots').querySelectorAll('.wiz-tab').forEach(b =>
+        b.onclick = () => { _wiz.page = +b.dataset.p; renderWizard(); });
+
+    const prev = document.getElementById('wizPrev'), next = document.getElementById('wizNext');
+    prev.disabled = w.page === 0;
+    const last = w.page === WIZ_PAGES.length - 1;
+    next.textContent = last ? 'Insert to Canvas' : 'Next →';
+    next.disabled = !w.skel || !w.skel.colors.length;
+
+    const body = document.getElementById('wizBody');
+    body.innerHTML = '';
+    if (w.page === 0) renderWizDetect(body);
+    else renderWizVectorize(body);
+}
+
+// ── preview canvas with zoom (wheel) + pan (drag), shared by both pages ───────
+function fitPreviewCanvas(cv, cssH) {
     const dpr = window.devicePixelRatio || 1;
     const wCss = cv.clientWidth || cv.parentElement.clientWidth || 300;
-    cv.width = Math.round(wCss * dpr); cv.height = Math.round(170 * dpr);
+    cv.width = Math.round(wCss * dpr); cv.height = Math.round((cssH || 190) * dpr);
     return dpr;
 }
 function drawWizPreview() {
     const cv = document.getElementById('wizPreviewCanvas'); if (!cv || !_extractFlat) return;
-    fitPreviewCanvas(cv);
+    fitPreviewCanvas(cv, cv._cssH);
     const ctx = cv.getContext('2d');
     const img = _extractFlat.out;
     const refW = _wiz.skel ? _wiz.skel.w : img.width, refH = _wiz.skel ? _wiz.skel.h : img.height;
-    const scale = Math.min(cv.width / refW, cv.height / refH);
-    const ox = (cv.width - refW * scale) / 2, oy = (cv.height - refH * scale) / 2;
+    const fit = Math.min(cv.width / refW, cv.height / refH);
+    if (!_wiz.view) _wiz.view = { z: 1, cx: refW / 2, cy: refH / 2 };
+    const s = fit * _wiz.view.z;
+    const ox = cv.width / 2 - _wiz.view.cx * s, oy = cv.height / 2 - _wiz.view.cy * s;
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, cv.width, cv.height);
-    ctx.globalAlpha = 0.3; ctx.drawImage(img, ox, oy, refW * scale, refH * scale); ctx.globalAlpha = 1;
-    cv._fit = { scale, ox, oy, refW, refH };
-    if (!_wiz.skel) return;
-    ctx.save(); ctx.translate(ox, oy); ctx.scale(scale, scale);
-    ctx.lineWidth = 1.6 / scale; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    for (const col of _wiz.skel.colors) {
-        ctx.strokeStyle = `rgb(${col.rgb.join(',')})`;
-        for (const d of (col.paths || [])) { try { ctx.stroke(new Path2D(d)); } catch (e) {} }
+    ctx.globalAlpha = 0.3; ctx.drawImage(img, 0, 0, img.width, img.height, ox, oy, refW * s, refH * s); ctx.globalAlpha = 1;
+    cv._fit = { scale: s, ox, oy, refW, refH };
+    if (_wiz.skel) {
+        ctx.save(); ctx.translate(ox, oy); ctx.scale(s, s);
+        ctx.lineWidth = 1.6 / s; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        for (const col of _wiz.skel.colors) {
+            ctx.strokeStyle = `rgb(${col.rgb.join(',')})`;
+            for (const d of (col.paths || [])) { try { ctx.stroke(new Path2D(d)); } catch (e) {} }
+        }
+        ctx.restore();
     }
-    ctx.restore();
+}
+// Attach zoom/pan (and optional eyedropper) to the current preview canvas.
+function attachPreviewControls(cv, opts = {}) {
+    cv._cssH = opts.cssH || 190;
+    cv.style.touchAction = 'none';
+    cv.onwheel = (ev) => {
+        ev.preventDefault();
+        const r = cv.getBoundingClientRect(); const dpr = cv.width / r.width;
+        const mx = (ev.clientX - r.left) * dpr, my = (ev.clientY - r.top) * dpr;
+        const f = cv._fit; if (!f) return;
+        const ix = (mx - f.ox) / f.scale, iy = (my - f.oy) / f.scale;   // image point under cursor
+        const nz = Math.max(1, Math.min(12, _wiz.view.z * (ev.deltaY < 0 ? 1.15 : 1 / 1.15)));
+        _wiz.view.z = nz;
+        // keep cursor over the same image point: recompute center so (ix,iy) stays put
+        const fit = f.scale / (_wiz.view._prevZ || _wiz.view.z);
+        _wiz.view.cx = ix + (cv.width / 2 - mx) / (fit * nz);
+        _wiz.view.cy = iy + (cv.height / 2 - my) / (fit * nz);
+        drawWizPreview();
+    };
+    let pan = null;
+    cv.onpointerdown = (ev) => {
+        if (opts.eyedrop && _wiz.eyedrop) return; // let click handle sampling
+        pan = { x: ev.clientX, y: ev.clientY, cx: _wiz.view.cx, cy: _wiz.view.cy }; cv.setPointerCapture(ev.pointerId);
+        cv.style.cursor = 'grabbing';
+    };
+    cv.onpointermove = (ev) => {
+        if (!pan || !cv._fit) return;
+        const dpr = cv.width / cv.getBoundingClientRect().width;
+        _wiz.view.cx = pan.cx - (ev.clientX - pan.x) * dpr / cv._fit.scale;
+        _wiz.view.cy = pan.cy - (ev.clientY - pan.y) * dpr / cv._fit.scale;
+        drawWizPreview();
+    };
+    cv.onpointerup = cv.onpointercancel = () => { pan = null; cv.style.cursor = opts.eyedrop && _wiz.eyedrop ? 'crosshair' : 'grab'; };
+    cv.style.cursor = opts.eyedrop && _wiz.eyedrop ? 'crosshair' : 'grab';
+    if (opts.eyedrop) {
+        cv.onclick = (ev) => {
+            if (!_wiz.eyedrop || !cv._fit) return;
+            const r = cv.getBoundingClientRect(); const dpr = cv.width / r.width;
+            const px = (ev.clientX - r.left) * dpr, py = (ev.clientY - r.top) * dpr;
+            const ix = (px - cv._fit.ox) / cv._fit.scale, iy = (py - cv._fit.oy) / cv._fit.scale;
+            const img = _extractFlat.out;
+            const sx = Math.round(ix * img.width / cv._fit.refW), sy = Math.round(iy * img.height / cv._fit.refH);
+            const tmp = document.createElement('canvas'); tmp.width = 1; tmp.height = 1;
+            const tc = tmp.getContext('2d'); tc.drawImage(img, sx, sy, 1, 1, 0, 0, 1, 1);
+            const d = tc.getImageData(0, 0, 1, 1).data;
+            _wiz.bg = [d[0], d[1], d[2]]; _wiz.eyedrop = false;
+            reanalyzeWiz(); renderWizard();
+        };
+    }
 }
 
-function renderWizBackground(body) {
+// Page 0 — Detect: preview + background row + pen-colour list (with merge).
+function renderWizDetect(body) {
     const hex = rgbHex(_wiz.bg);
+    const cols = _wiz.skel ? _wiz.skel.colors : [];
+    const colourRows = !cols.length
+        ? '<div class="vep-empty">No distinct ink detected — adjust the background, re-crop tighter, or improve lighting.</div>'
+        : cols.map((col, i) => {
+            let simTo = -1; for (let j = 0; j < i; j++) { if (rgbDist(col.rgb, cols[j].rgb) < 26) { simTo = j; break; } }
+            return `<div class="vep-row">
+                <span class="vep-swatch" style="background:rgb(${col.rgb.join(',')})"></span>
+                <span class="vep-label"><b>${rgbHex(col.rgb)}</b><small>${col.name} · ${(col.paths ? col.paths.length : 0)} stroke${(col.paths && col.paths.length === 1) ? '' : 's'}</small></span>
+                ${simTo >= 0 ? `<button class="vep-merge" data-i="${i}" data-j="${simTo}" title="Looks like ${rgbHex(cols[simTo].rgb)} — merge">merge ↑</button>` : ''}
+            </div>`;
+        }).join('');
     body.innerHTML =
-        `<div class="wiz-lead">This is the paper colour I'll treat as background and ignore. Approve it, or tap <b>Pick</b> then click the image to choose a different spot.</div>
+        `<canvas id="wizPreviewCanvas" class="wiz-preview"></canvas>
          <div class="wiz-bg-row">
             <span class="wiz-bg-swatch" style="background:rgb(${_wiz.bg.join(',')})"></span>
-            <span class="wiz-bg-info"><b>${hex}</b><small>detected substrate</small></span>
+            <span class="wiz-bg-info"><b>${hex}</b><small>background (ignored)</small></span>
             <button class="wiz-eyedrop ${_wiz.eyedrop ? 'active' : ''}" id="wizEyedrop">Pick</button>
          </div>
-         <canvas id="wizPreviewCanvas" class="wiz-preview"></canvas>`;
-    drawWizPreview();
-    document.getElementById('wizEyedrop').onclick = (e) => { _wiz.eyedrop = !_wiz.eyedrop; e.target.classList.toggle('active', _wiz.eyedrop); };
+         <div class="wiz-sub">Detected pen colours — merge any that should be one:</div>
+         <div class="vep-colors">${colourRows}</div>`;
     const cv = document.getElementById('wizPreviewCanvas');
-    cv.style.cursor = 'crosshair';
-    cv.onclick = (ev) => {
-        if (!_wiz.eyedrop || !cv._fit) return;
-        const r = cv.getBoundingClientRect(); const dpr = cv.width / r.width;
-        const px = (ev.clientX - r.left) * dpr, py = (ev.clientY - r.top) * dpr;
-        const ix = (px - cv._fit.ox) / cv._fit.scale, iy = (py - cv._fit.oy) / cv._fit.scale;
-        const img = _extractFlat.out;
-        const sx = Math.round(ix * img.width / cv._fit.refW), sy = Math.round(iy * img.height / cv._fit.refH);
-        const tmp = document.createElement('canvas'); tmp.width = 1; tmp.height = 1;
-        const tc = tmp.getContext('2d'); tc.drawImage(img, sx, sy, 1, 1, 0, 0, 1, 1);
-        const d = tc.getImageData(0, 0, 1, 1).data;
-        _wiz.bg = [d[0], d[1], d[2]]; _wiz.eyedrop = false; _wiz.skel = null;
-        renderWizard();
+    attachPreviewControls(cv, { eyedrop: true, cssH: 190 });
+    drawWizPreview();
+    document.getElementById('wizEyedrop').onclick = (e) => {
+        _wiz.eyedrop = !_wiz.eyedrop; e.target.classList.toggle('active', _wiz.eyedrop);
+        cv.style.cursor = _wiz.eyedrop ? 'crosshair' : 'grab';
     };
-}
-
-function renderWizColours(body) {
-    const cols = _wiz.skel ? _wiz.skel.colors : [];
-    if (!cols.length) { body.innerHTML = '<div class="vep-empty">No distinct ink detected — go Back and pick a better background, re-crop tighter, or improve lighting.</div>'; return; }
-    const rows = cols.map((col, i) => {
-        const hex = rgbHex(col.rgb);
-        let simTo = -1; for (let j = 0; j < i; j++) { if (rgbDist(col.rgb, cols[j].rgb) < 26) { simTo = j; break; } }
-        return `<div class="vep-row">
-            <span class="vep-swatch" style="background:rgb(${col.rgb.join(',')})"></span>
-            <span class="vep-label"><b>${hex}</b><small>${col.name} · ${(col.paths ? col.paths.length : 0)} stroke${(col.paths && col.paths.length === 1) ? '' : 's'}</small></span>
-            ${simTo >= 0 ? `<button class="vep-merge" data-i="${i}" data-j="${simTo}" title="Looks like ${rgbHex(cols[simTo].rgb)} — merge">merge ↑</button>` : ''}
-        </div>`;
-    }).join('');
-    body.innerHTML = `<div class="wiz-lead">Detected pen colours. Merge any that should be one, then continue.</div><div class="vep-colors">${rows}</div>`;
     body.querySelectorAll('.vep-merge').forEach(btn => btn.onclick = () => {
         const i = +btn.dataset.i, j = +btn.dataset.j, C = _wiz.skel.colors;
         if (!C[i] || !C[j]) return;
         const wa = C[j].count || 1, wb = C[i].count || 1;
         C[j].rgb = C[j].rgb.map((v, k) => Math.round((v * wa + C[i].rgb[k] * wb) / (wa + wb)));
         C[j].rawPolys = C[j].rawPolys.concat(C[i].rawPolys);
-        // union masks so endpoint extension still works
-        if (C[j].mask && C[i].mask) { const m = C[j].mask; const o = C[i].mask; for (let k = 0; k < m.length; k++) if (o[k]) m[k] = 1; }
+        if (C[j].mask && C[i].mask) { const m = C[j].mask, o = C[i].mask; for (let k = 0; k < m.length; k++) if (o[k]) m[k] = 1; }
         C[j].count = wa + wb; C.splice(i, 1);
         refinePaths(_wiz.skel, { accuracy: _wiz.accuracy, simplify: _wiz.simplify });
         renderWizard();
     });
 }
 
-function renderWizSlider(body, key, leftLabel, rightLabel, desc) {
-    body.innerHTML =
-        `<canvas id="wizPreviewCanvas" class="wiz-preview"></canvas>
-         <div class="wiz-lead">${desc}</div>
-         <div class="wiz-slider-row">
-            <input type="range" min="0" max="100" value="${Math.round(_wiz[key] * 100)}" id="wizSlider">
-            <div class="wiz-slabels"><span>${leftLabel}</span><span>${rightLabel}</span></div>
-         </div>`;
-    drawWizPreview();
-    const slider = document.getElementById('wizSlider');
-    slider.oninput = () => {
-        _wiz[key] = slider.value / 100;
-        refinePaths(_wiz.skel, { accuracy: _wiz.accuracy, simplify: _wiz.simplify });
-        drawWizPreview();
-    };
-}
-
-function renderWizAssign(body) {
-    const cols = _wiz.skel.colors;
-    const rows = cols.map((col, i) => {
-        const hex = rgbHex(col.rgb);
-        const suggested = _wiz.assignments[i] || _lastOpForColor[hex] || 'draw';
+// Page 1 — Vectorize: preview + Detail/Simplify sliders + per-colour operation.
+function renderWizVectorize(body) {
+    const cols = _wiz.skel ? _wiz.skel.colors : [];
+    const opRows = cols.map((col, i) => {
+        const suggested = _wiz.assignments[i] || _lastOpForColor[rgbHex(col.rgb)] || 'draw';
         const opts = OP_OPTIONS.map(o => `<option value="${o.v}" ${o.v === suggested ? 'selected' : ''}>${o.label}</option>`).join('');
         return `<div class="vep-row">
             <span class="vep-swatch" style="background:rgb(${col.rgb.join(',')})"></span>
-            <span class="vep-label"><b>${hex}</b><small>${col.name}</small></span>
+            <span class="vep-label"><b>${rgbHex(col.rgb)}</b><small>${col.name}</small></span>
             <select data-idx="${i}">${opts}</select>
         </div>`;
     }).join('');
-    body.innerHTML = `<canvas id="wizPreviewCanvas" class="wiz-preview"></canvas><div class="wiz-lead">Assign each colour to a machine operation, then insert.</div><div class="vep-colors">${rows}</div>`;
+    body.innerHTML =
+        `<canvas id="wizPreviewCanvas" class="wiz-preview"></canvas>
+         <div class="wiz-slider-row">
+            <label>Detail</label>
+            <input type="range" min="0" max="100" value="${Math.round(_wiz.accuracy * 100)}" id="wizAcc">
+            <div class="wiz-slabels"><span>Smooth</span><span>Accurate</span></div>
+         </div>
+         <div class="wiz-slider-row">
+            <label>Simplify</label>
+            <input type="range" min="0" max="100" value="${Math.round(_wiz.simplify * 100)}" id="wizSimp">
+            <div class="wiz-slabels"><span>Detailed</span><span>Simplified</span></div>
+         </div>
+         <div class="wiz-sub">Assign each colour to a machine operation:</div>
+         <div class="vep-colors">${opRows}</div>`;
+    const cv = document.getElementById('wizPreviewCanvas');
+    attachPreviewControls(cv, { cssH: 190 });
     drawWizPreview();
+    const relight = () => { refinePaths(_wiz.skel, { accuracy: _wiz.accuracy, simplify: _wiz.simplify }); drawWizPreview(); };
+    document.getElementById('wizAcc').oninput = (e) => { _wiz.accuracy = e.target.value / 100; relight(); };
+    document.getElementById('wizSimp').oninput = (e) => { _wiz.simplify = e.target.value / 100; relight(); };
     body.querySelectorAll('select').forEach(sel => sel.onchange = () => { _wiz.assignments[+sel.dataset.idx] = sel.value; });
 }
 
 function wizNext() {
     const w = _wiz; if (!w) return;
-    if (w.step === 0) {
-        try {
-            w.skel = analyzeSkeletons(_extractFlat.out, _extractFlat.paperW, _extractFlat.paperH, { bg: w.bg });
-            refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify });
-        } catch (e) { console.error('analyzeSkeletons:', e); }
-        w.step = 1; renderWizard(); return;
-    }
-    if (w.step < WIZ_STEPS.length - 1) { w.step++; renderWizard(); return; }
+    if (w.page < WIZ_PAGES.length - 1) { w.page++; renderWizard(); return; }
     wizInsert();
 }
-function wizPrev() { if (_wiz && _wiz.step > 0) { _wiz.step--; renderWizard(); } }
+function wizPrev() { if (_wiz && _wiz.page > 0) { _wiz.page--; renderWizard(); } }
 
 function wizInsert() {
     const w = _wiz; if (!w || !w.skel) return;
