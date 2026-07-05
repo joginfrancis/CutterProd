@@ -37,7 +37,7 @@ import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
 import { CanvasEditor } from './CanvasEditor.js?v=12';
-import { analyzeDrawing, buildSVG } from './DrawingVectorizer.js?v=5';
+import { analyzeDrawing, buildSVG } from './DrawingVectorizer.js?v=6';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -2082,6 +2082,9 @@ const OP_OPTIONS = [
 // Remember the last operation chosen for a given color name (convenience default)
 const _lastOpForColor = {};
 
+// Fully automatic: flatten → vectorize → insert every detected color as its own
+// selectable layer (original ink color, default 'Draw' operation) + a faint reference
+// image, all aligned. Color→operation is reassigned afterwards by selecting a layer.
 function runExtractDrawing() {
     if (!canvasEditor) return;
     const pill = document.getElementById('visionCropStatus');
@@ -2090,13 +2093,15 @@ function runExtractDrawing() {
         const res = flattenCroppedPage();
         if (!res) return;
         if (pill) pill.textContent = 'Extracting drawing…';
-        // Defer so the pill repaints before the (synchronous) heavy analysis
         setTimeout(() => {
             try {
-                _extractFlat = res; // keep the flattened page for the reference underlay
+                _extractFlat = res;
                 _extractResult = analyzeDrawing(res.out, res.paperW, res.paperH);
-                renderExtractPanel(_extractResult);
-                if (pill) pill.textContent = '';
+                if (!_extractResult.colors.length) {
+                    if (pill) { pill.textContent = 'No distinct ink detected — re-crop tighter or improve lighting.'; pill.style.color = '#ef4444'; }
+                    return;
+                }
+                insertExtracted(_extractResult, _extractFlat);
             } catch (err) {
                 console.error('analyzeDrawing:', err);
                 if (pill) { pill.textContent = 'Extraction failed.'; pill.style.color = '#ef4444'; }
@@ -2108,65 +2113,27 @@ function runExtractDrawing() {
     }
 }
 
-function renderExtractPanel(result) {
-    const panel = document.getElementById('visionExtractPanel');
-    const list = document.getElementById('vepColors');
-    const applyBtn = document.getElementById('btnVepApply');
-    if (!panel || !list) return;
-    list.innerHTML = '';
-
-    if (!result.colors.length) {
-        list.innerHTML = '<div class="vep-empty">No distinct ink colors detected against this substrate. Try re-cropping tighter to the drawing, or check contrast.</div>';
-        if (applyBtn) applyBtn.style.display = 'none';
-    } else {
-        if (applyBtn) applyBtn.style.display = '';
-        result.colors.forEach((col, i) => {
-            const [r, g, b] = col.rgb;
-            const row = document.createElement('div');
-            row.className = 'vep-row';
-            const suggested = _lastOpForColor[col.name] || (i === 0 ? 'thru_cut' : 'draw');
-            const opts = OP_OPTIONS.map(o => `<option value="${o.v}" ${o.v === suggested ? 'selected' : ''}>${o.label}</option>`).join('');
-            row.innerHTML =
-                `<span class="vep-swatch" style="background:rgb(${r},${g},${b})"></span>` +
-                `<span class="vep-label">${col.name}<small>${col.paths.length} stroke${col.paths.length === 1 ? '' : 's'}</small></span>` +
-                `<select data-idx="${i}">${opts}</select>`;
-            list.appendChild(row);
-        });
-    }
-    panel.classList.remove('hidden');
-}
-
-function applyExtractedLayers() {
-    if (!_extractResult) return;
+function insertExtracted(result, flat) {
+    // Default every detected color to Draw; the user assigns Cut/Crease per colour
+    // afterwards (select the coloured layer → Cut/Score/Fold). Remember last choice.
     const assignments = {};
-    document.querySelectorAll('#vepColors select').forEach(sel => {
-        const idx = parseInt(sel.getAttribute('data-idx'), 10);
-        assignments[idx] = sel.value;
-        const col = _extractResult.colors[idx];
-        if (col) _lastOpForColor[col.name] = sel.value;
-    });
-    const svg = buildSVG(_extractResult, assignments);
+    result.colors.forEach((col, i) => { assignments[i] = _lastOpForColor[col.name] || 'draw'; });
+    const svg = buildSVG(result, assignments);
     canvasEditor.importSVG(svg);
-    // Add the flattened photo as a faint reference layer UNDER the vectors, so manual
-    // edits can be aligned against the real drawing. Excluded from toolpath export.
-    if (_extractFlat) {
-        const bedW = canvasEditor.view?.bedW || 960;
-        const bedH = canvasEditor.view?.bedH || 770;
-        const { out, paperW, paperH } = _extractFlat;
-        // Align the underlay to the exact rectangle importSVG placed the vectors in
+    // faint reference underlay, aligned to the placed page rectangle
+    if (flat) {
+        const bedW = canvasEditor.view?.bedW || 960, bedH = canvasEditor.view?.bedH || 770;
+        const { out, paperW, paperH } = flat;
         const box = canvasEditor._lastImportBox;
         const ref = new Image();
         ref.onload = () => {
-            const x = box ? box.x : (bedW - paperW) / 2;
-            const y = box ? box.y : (bedH - paperH) / 2;
-            const w = box ? box.w : paperW;
-            const h = box ? box.h : paperH;
+            const x = box ? box.x : (bedW - paperW) / 2, y = box ? box.y : (bedH - paperH) / 2;
+            const w = box ? box.w : paperW, h = box ? box.h : paperH;
             canvasEditor.addImage(ref, x, y, w, h, { opacity: 0.25, background: true, name: 'Reference (flattened)' });
         };
         ref.src = out.toDataURL('image/png');
     }
-    const n = Object.values(assignments).filter(v => v && v !== 'ignore').length;
-    log(`Extracted drawing: added ${n} operation layer${n === 1 ? '' : 's'} to canvas.`, 'success');
+    log(`Inserted ${result.colors.length} colour layer${result.colors.length === 1 ? '' : 's'} — select a layer to set Cut / Crease / Draw.`, 'success');
     if (window.switchTab) window.switchTab('draw');
     closeVisionModal();
 }
@@ -2175,10 +2142,6 @@ document.getElementById('visionPaperSize')?.addEventListener('change', (e) => {
     document.getElementById('visionCustomSize').style.display = e.target.value === 'custom' ? 'flex' : 'none';
 });
 document.getElementById('btnVisionExtract')?.addEventListener('click', runExtractDrawing);
-document.getElementById('btnVepApply')?.addEventListener('click', applyExtractedLayers);
-document.getElementById('btnVepBack')?.addEventListener('click', () => {
-    document.getElementById('visionExtractPanel')?.classList.add('hidden');
-});
 
 // Upload a saved image straight from the PC (same detect → crop → flatten flow)
 document.getElementById('btnVisionUpload')?.addEventListener('click', () => {

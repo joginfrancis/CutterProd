@@ -17,12 +17,12 @@
 
 const MAX_EDGE = 1400;      // working raster cap — plenty for clean skeletons
 const K_INIT = 6;           // initial cluster count (over-cluster, then merge)
-// Distinct marker colors (red/green/blue/black) sit ~50-100 ΔE apart, while a single
-// marker's solid core vs its anti-aliased edge differ by ~15-30 ΔE. A generous merge
-// threshold collapses those shade variants into ONE color so a stroke yields a single
-// centerline (not core + two boundary skeletons, which looked like doubled/offset lines).
-const MERGE_DE = 32;
-const MIN_CLUSTER_FRAC = 0.01; // drop clusters below this fraction of ink pixels (spurs)
+// Colors are merged by HUE (lightness-invariant): a marker's solid core and its
+// anti-aliased edge share a hue and collapse; distinct pens keep their hue and stay
+// separate — reliable even on dim/low-saturation photos.
+const HUE_MERGE_RAD = 32 * Math.PI / 180; // same-hue shades within ~32° merge
+const CHROMA_MIN = 7;                      // Lab chroma below this = neutral (black/gray)
+const MIN_CLUSTER_FRAC = 0.01;             // drop clusters below this fraction of ink pixels (spurs)
 
 // ── color space ──────────────────────────────────────────────────────────
 function srgbToLin(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
@@ -139,10 +139,22 @@ function kmeans(samples, k, iters = 12) {
     }
     return cents;
 }
-function mergeCentroids(cents, de) {
+// Hue-based merge: lightness-invariant so a marker's solid core and its anti-aliased
+// edge (same hue, different lightness/chroma) collapse into one color, while distinct
+// pens (different hue) stay separate — robust even under dim/low-saturation lighting.
+function hueOf(lab) { return Math.atan2(lab[2], lab[1]); }      // radians
+function chromaOf(lab) { return Math.hypot(lab[1], lab[2]); }
+function angDiff(a, b) { let d = Math.abs(a - b) % (2 * Math.PI); return d > Math.PI ? 2 * Math.PI - d : d; }
+function mergeCentroids(cents, hueTolRad, cMin) {
     const out = [];
     for (const c of cents) {
-        const hit = out.find(o => deltaE(o, c) < de);
+        const cc = chromaOf(c), ch = hueOf(c);
+        const hit = out.find(o => {
+            const oc = chromaOf(o), oh = hueOf(o);
+            if (cc < cMin && oc < cMin) return true;       // both near-neutral (black/gray) → one bucket
+            if (cc < cMin || oc < cMin) return false;      // one neutral, one chromatic → keep apart
+            return angDiff(ch, oh) < hueTolRad;            // both chromatic → merge same-hue shades
+        });
         if (!hit) out.push(c.slice());
     }
     return out;
@@ -198,7 +210,7 @@ export function analyzeDrawing(sourceCanvas, paperW, paperH, opts = {}) {
     const samples = [];
     for (let s = 0; s < inkIdx.length; s += step) { const i = inkIdx[s]; samples.push([lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]]); }
 
-    let cents = mergeCentroids(kmeans(samples, K_INIT), MERGE_DE);
+    let cents = mergeCentroids(kmeans(samples, K_INIT), HUE_MERGE_RAD, CHROMA_MIN);
 
     // 4. assign every ink pixel to nearest centroid; count
     const counts = new Array(cents.length).fill(0);
@@ -230,6 +242,9 @@ export function analyzeDrawing(sourceCanvas, paperW, paperH, opts = {}) {
     for (let c = 0; c < cents.length; c++) {
         if (!keep[c] || rgbAcc[c][3] === 0) continue;
         const rgb = [Math.round(rgbAcc[c][0] / rgbAcc[c][3]), Math.round(rgbAcc[c][1] / rgbAcc[c][3]), Math.round(rgbAcc[c][2] / rgbAcc[c][3])];
+        // Drop clusters whose color sits too close to the substrate — these are
+        // paper/lighting-gradient leakage picked up by the ink threshold, not real ink.
+        if (deltaE(rgbToLab(rgb[0], rgb[1], rgb[2]), bg) < 22) continue;
 
         // white-on-black mask canvas for this cluster
         const mc = document.createElement('canvas'); mc.width = w; mc.height = h;
