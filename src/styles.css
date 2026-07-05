@@ -2946,81 +2946,80 @@ body .btn-action { /* Specificity override */
 .vision-cta-secondary:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
 
 /* Color → operation mapping panel (overlays the crop canvas) */
-/* Flush content of the one window — no card chrome, no second header */
-.vision-extract-panel {
-    position: absolute;
-    inset: 0;
-    z-index: 6;
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    background: #fff;
-    color: var(--text-main);
+/* ── Vision Review — one clean, modern screen ── */
+.vex-panel {
+    position: absolute; inset: 0; z-index: 6;
+    display: flex; flex-direction: column; gap: 0.75rem;
+    background: #fff; color: var(--text-main);
 }
-.vep-header {
-    display: flex; align-items: center; justify-content: space-between;
-    font-size: 0.82rem; font-weight: 600; color: var(--text-main);
-}
-.vep-back {
+.vex-ctxbar { display: flex; align-items: center; justify-content: space-between; }
+.vex-back {
     background: transparent; border: none; color: var(--text-muted);
-    font-size: 1.35rem; line-height: 1; cursor: pointer;
+    font-size: 0.84rem; font-weight: 600; cursor: pointer; padding: 0.15rem 0;
 }
-.vep-colors { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem; }
-.vep-row {
-    display: flex; align-items: center; gap: 0.6rem;
-    background: #f8fafc; border: 1px solid var(--border); border-radius: 9px; padding: 0.45rem 0.6rem;
+.vex-back:hover { color: var(--accent); }
+.vex-paper-tag { font-size: 0.72rem; color: var(--text-muted); }
+
+.vex-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.95rem; }
+
+.vex-preview {
+    width: 100%; height: 200px; display: block; border-radius: 12px;
+    background: #f8fafc; border: 1px solid var(--border);
+    box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.05);
 }
-.vep-swatch { width: 24px; height: 24px; border-radius: 6px; border: 1px solid rgba(15,23,42,0.15); flex-shrink: 0; }
-.vep-label { font-size: 0.82rem; flex: 1; min-width: 0; }
-.vep-label b { font-family: ui-monospace, monospace; font-weight: 600; }
-.vep-label small { display: block; color: var(--text-muted); font-size: 0.68rem; }
-.vep-merge {
-    padding: 0.28rem 0.5rem; border: 1px solid var(--border-dark); border-radius: 7px;
-    background: #fff; color: var(--accent); font-size: 0.7rem; font-weight: 600; cursor: pointer; white-space: nowrap;
+
+.vex-section-label {
+    font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted); font-weight: 700; margin-bottom: -0.35rem;
 }
-.vep-merge:hover { background: var(--accent-glow); border-color: var(--accent); }
-.vep-row select {
-    padding: 0.38rem 0.45rem; border-radius: 7px; border: 1px solid var(--border-dark);
-    background: #fff; color: var(--text-main); font-size: 0.78rem; cursor: pointer;
+
+.vex-colours { display: flex; flex-direction: column; }
+.vex-crow {
+    display: flex; align-items: center; gap: 0.7rem; padding: 0.55rem 0.15rem;
+    border-bottom: 1px solid var(--border);
 }
-.vep-apply {
-    padding: 0.65rem 1rem; border: none; border-radius: 10px;
+.vex-crow:last-child { border-bottom: none; }
+.vex-swatch { width: 20px; height: 20px; border-radius: 999px; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(15,23,42,0.12), 0 1px 2px rgba(15,23,42,0.15); }
+.vex-cname { flex: 1; min-width: 0; font-size: 0.85rem; font-weight: 500; }
+.vex-cname small { color: var(--text-muted); font-size: 0.66rem; font-family: ui-monospace, monospace; margin-left: 0.4rem; }
+.vex-merge {
+    padding: 0.22rem 0.55rem; border: none; border-radius: 999px;
+    background: var(--accent-glow); color: var(--accent); font-size: 0.68rem; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.vex-merge:hover { filter: brightness(0.97); }
+.vex-op {
+    padding: 0.38rem 0.55rem; border-radius: 8px; border: 1px solid transparent;
+    background: #f1f5f9; color: var(--text-main); font-size: 0.78rem; font-weight: 600; cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.vex-op:hover { border-color: var(--border-dark); }
+.vex-op:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+.vex-bgline { display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem; color: var(--text-muted); }
+.vex-bg-swatch { width: 16px; height: 16px; border-radius: 4px; box-shadow: 0 0 0 1px rgba(15,23,42,0.15); }
+.vex-bgline b { font-family: ui-monospace, monospace; font-weight: 600; color: var(--text-main); }
+.vex-link { background: none; border: none; color: var(--accent); font-size: 0.76rem; font-weight: 600; cursor: pointer; padding: 0; }
+.vex-link.active { text-decoration: underline; }
+
+.vex-ft-toggle {
+    display: inline-flex; align-items: center; gap: 0.35rem; background: none; border: none;
+    color: var(--text-muted); font-size: 0.76rem; font-weight: 600; cursor: pointer; padding: 0;
+}
+.vex-ft-toggle:hover { color: var(--accent); }
+.vex-ft-body { display: flex; flex-direction: column; gap: 0.7rem; margin-top: 0.55rem; }
+.vex-slider { display: flex; flex-direction: column; gap: 0.2rem; }
+.vex-slider > label { font-size: 0.74rem; font-weight: 600; color: var(--text-main); }
+.vex-slider input[type=range] { width: 100%; accent-color: var(--accent); }
+.vex-slabels { display: flex; justify-content: space-between; font-size: 0.68rem; color: var(--text-muted); }
+
+.vex-cta {
+    padding: 0.72rem 1rem; border: none; border-radius: 11px;
     background: linear-gradient(180deg, var(--accent), var(--accent-hover));
-    color: #fff; font-size: 0.86rem; font-weight: 700; cursor: pointer;
+    color: #fff; font-size: 0.9rem; font-weight: 700; cursor: pointer;
     box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);
 }
-.vep-apply:hover { filter: brightness(1.06); }
-.vep-empty { color: var(--danger); font-size: 0.8rem; text-align: center; padding: 1rem; }
-
-/* ── Vectorization wizard ── */
-/* Clickable page stepper */
-.wiz-dots { display: flex; gap: 0.4rem; }
-.wiz-tab {
-    flex: 1; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 8px;
-    background: #f8fafc; color: var(--text-muted); font-size: 0.75rem; font-weight: 600;
-    cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-.wiz-tab.on { background: var(--accent-glow); color: var(--accent); border-color: var(--accent); }
-.wiz-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.7rem; }
-.wiz-lead { font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; }
-.wiz-sub { font-size: 0.76rem; color: var(--text-muted); font-weight: 500; }
-.wiz-bg-row { display: flex; align-items: center; gap: 0.7rem; background: #f8fafc; border: 1px solid var(--border); border-radius: 9px; padding: 0.6rem 0.7rem; }
-.wiz-bg-swatch { width: 34px; height: 34px; border-radius: 8px; border: 1px solid rgba(15,23,42,0.15); }
-.wiz-bg-info b { font-family: ui-monospace, monospace; }
-.wiz-bg-info small { display: block; color: var(--text-muted); font-size: 0.7rem; }
-.wiz-eyedrop { margin-left: auto; padding: 0.4rem 0.6rem; border: 1px solid var(--border-dark); border-radius: 8px; background: #fff; color: var(--text-main); font-size: 0.76rem; cursor: pointer; }
-.wiz-eyedrop.active { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
-.wiz-slider-row { display: flex; flex-direction: column; gap: 0.25rem; }
-.wiz-slider-row > label { font-size: 0.75rem; font-weight: 600; color: var(--text-main); }
-.wiz-slider-row .wiz-slabels { display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--text-muted); }
-.wiz-slider-row input[type=range] { width: 100%; accent-color: var(--accent); }
-.wiz-slider-row .wiz-sval { text-align: center; font-size: 0.74rem; font-weight: 600; color: var(--accent); }
-.wiz-nav { display: flex; gap: 0.6rem; }
-.wiz-nav .vep-apply { flex: 1; }
-.wiz-btn-ghost { padding: 0.65rem 1rem; border: 1px solid var(--border-dark); border-radius: 10px; background: #fff; color: var(--text-main); font-size: 0.84rem; font-weight: 600; cursor: pointer; }
-.wiz-btn-ghost:hover { background: #f1f5f9; }
-.wiz-btn-ghost:disabled { opacity: 0.4; cursor: default; }
-.wiz-preview { width: 100%; height: 170px; border-radius: 10px; border: 1px solid var(--border); display: block; background: #f8fafc; }
+.vex-cta:hover { filter: brightness(1.06); }
+.vex-empty { color: var(--danger); font-size: 0.8rem; text-align: center; padding: 1rem; }
 
 /* Bounding-box size chip in the properties inspector */
 .size-chip {

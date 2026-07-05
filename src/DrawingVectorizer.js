@@ -265,7 +265,12 @@ export function analyzeSkeletons(sourceCanvas, paperW, paperH, opts = {}) {
     for (let c = 0; c < cents.length; c++) {
         if (!keep[c] || rgbAcc[c][3] === 0) continue;
         const rgb = [Math.round(rgbAcc[c][0] / rgbAcc[c][3]), Math.round(rgbAcc[c][1] / rgbAcc[c][3]), Math.round(rgbAcc[c][2] / rgbAcc[c][3])];
-        if (deltaE(rgbToLab(rgb[0], rgb[1], rgb[2]), bg) < 22) continue;
+        // Reject substrate leakage: too close to the paper, OR pale/low-chroma (a light
+        // grey paper tint) that isn't a real pen. Dark ink (low L) is always kept.
+        const labC = rgbToLab(rgb[0], rgb[1], rgb[2]);
+        const chromaC = Math.hypot(labC[1], labC[2]);
+        if (deltaE(labC, bg) < 28) continue;
+        if (chromaC < 12 && labC[0] > 70) continue;
 
         const mask = new Uint8Array(N);
         const mc = document.createElement('canvas'); mc.width = w; mc.height = h;

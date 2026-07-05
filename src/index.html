@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UrumiCutter V2 - Control Dashboard</title>
-    <link rel="stylesheet" href="styles.css?v=20">
+    <link rel="stylesheet" href="styles.css?v=21">
     <!-- Google Font for Outfit and Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -663,14 +663,14 @@
                         <button id="btnVisionNewPhoto" class="vision-new-photo" title="Discard and capture / upload a different photo">&larr; New photo</button>
                         <p id="visionCropHint" class="vision-hint">Scroll to zoom · drag to pan · hover a corner to inspect, drag to adjust</p>
 
-                        <!-- Extract phases (Detect / Vectorize) — flush content of the one window -->
-                        <div id="visionExtractPanel" class="vision-extract-panel hidden">
-                            <div id="wizDots" class="wiz-dots"></div>
-                            <div id="wizBody" class="wiz-body"></div>
-                            <div class="wiz-nav">
-                                <button id="wizPrev" class="wiz-btn-ghost">&lsaquo; Crop</button>
-                                <button id="wizNext" class="vep-apply">Next</button>
+                        <!-- Review: one clean screen (flush content of the one window) -->
+                        <div id="visionExtractPanel" class="vex-panel hidden">
+                            <div class="vex-ctxbar">
+                                <button id="wizPrev" class="vex-back">&lsaquo; Back</button>
+                                <span id="vexPaperTag" class="vex-paper-tag"></span>
                             </div>
+                            <div id="wizBody" class="vex-body"></div>
+                            <button id="wizNext" class="vex-cta">Add to Canvas</button>
                         </div>
                     </div>
 
@@ -702,7 +702,7 @@
     <!-- SCRIPTS -->
     <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="trace_skeleton.js"></script>
-    <script type="module" src="script.js?v=44"></script>
+    <script type="module" src="script.js?v=45"></script>
 
 </body>
 </html>
