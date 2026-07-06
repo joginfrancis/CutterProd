@@ -197,6 +197,23 @@ function extendEnd(end, prev, mask, w, h, maxExt) {
     return best;
 }
 
+// ── binary morphology (separable box) — clean thick/hollow ink bands ─────────
+function _dilate(mask, w, h, r) {
+    const tmp = new Uint8Array(mask.length), out = new Uint8Array(mask.length);
+    for (let y = 0; y < h; y++) { const row = y * w; for (let x = 0; x < w; x++) { let on = 0; for (let dx = -r; dx <= r; dx++) { const xx = x + dx; if (xx >= 0 && xx < w && mask[row + xx]) { on = 1; break; } } tmp[row + x] = on; } }
+    for (let y = 0; y < h; y++) { const row = y * w; for (let x = 0; x < w; x++) { let on = 0; for (let dy = -r; dy <= r; dy++) { const yy = y + dy; if (yy >= 0 && yy < h && tmp[yy * w + x]) { on = 1; break; } } out[row + x] = on; } }
+    return out;
+}
+function _erode(mask, w, h, r) {
+    const tmp = new Uint8Array(mask.length), out = new Uint8Array(mask.length);
+    for (let y = 0; y < h; y++) { const row = y * w; for (let x = 0; x < w; x++) { let on = 1; for (let dx = -r; dx <= r; dx++) { const xx = x + dx; if (xx < 0 || xx >= w || !mask[row + xx]) { on = 0; break; } } tmp[row + x] = on; } }
+    for (let y = 0; y < h; y++) { const row = y * w; for (let x = 0; x < w; x++) { let on = 1; for (let dy = -r; dy <= r; dy++) { const yy = y + dy; if (yy < 0 || yy >= h || !tmp[yy * w + x]) { on = 0; break; } } out[row + x] = on; } }
+    return out;
+}
+// Morphological close (fill hollow/streaky stroke cores) so thinning yields ONE
+// centerline per stroke instead of a doubled "ladder" along a thick band.
+function _closeMask(mask, w, h, r) { return _erode(_dilate(mask, w, h, r), w, h, r); }
+
 // ── Heavy pass: substrate → ink mask → colour clusters → raw skeleton polylines.
 // opts.bg = [r,g,b] substrate override. Returns a result carrying per-colour raw
 // polylines + binary mask so the cheap refine pass can re-run on slider changes.
@@ -273,15 +290,22 @@ export function analyzeSkeletons(sourceCanvas, paperW, paperH, opts = {}) {
         if (chromaC < 12 && labC[0] > 70) continue;
 
         const mask = new Uint8Array(N);
+        for (let i = 0; i < N; i++) if (assign[i] === c) mask[i] = 1;
+        // Close the band to fill hollow/streaky cores → single centerline on thinning.
+        // Radius scales with the working raster so it works at any capture resolution.
+        const closeR = Math.max(1, Math.round(Math.min(w, h) / 260));
+        const clean = _closeMask(mask, w, h, closeR);
+
         const mc = document.createElement('canvas'); mc.width = w; mc.height = h;
         const mx = mc.getContext('2d'); const md = mx.createImageData(w, h);
-        for (let i = 0; i < N; i++) { const on = assign[i] === c ? 255 : 0; if (on) mask[i] = 1; const j = i * 4; md.data[j] = on; md.data[j + 1] = on; md.data[j + 2] = on; md.data[j + 3] = 255; }
+        for (let i = 0; i < N; i++) { const on = clean[i] ? 255 : 0; const j = i * 4; md.data[j] = on; md.data[j + 1] = on; md.data[j + 2] = on; md.data[j + 3] = 255; }
         mx.putImageData(md, 0, 0);
 
         const res = window.TraceSkeleton.fromCanvas(mc);
-        const rawPolys = (res.polylines || []).filter(p => p.length >= 6);
+        // keep the closed mask for endpoint recovery; drop very short spur polylines
+        const rawPolys = (res.polylines || []).filter(p => p.length >= 8);
         if (!rawPolys.length) continue;
-        colors.push({ rgb, name: nearestName(rgbToLab(rgb[0], rgb[1], rgb[2])), count: counts[c], rawPolys, mask });
+        colors.push({ rgb, name: nearestName(rgbToLab(rgb[0], rgb[1], rgb[2])), count: counts[c], rawPolys, mask: clean });
     }
     colors.sort((a, b) => b.count - a.count);
     return { w, h, paperW, paperH, bgRgb, colors };

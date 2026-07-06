@@ -37,7 +37,7 @@ import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
 import { CanvasEditor } from './CanvasEditor.js?v=12';
-import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG } from './DrawingVectorizer.js?v=8';
+import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG } from './DrawingVectorizer.js?v=10';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -1732,8 +1732,9 @@ function detectPageCorners(img, timeoutMs = 9000) {
 let _hintFadeTimer = null;
 function showVisionPreview(img, detectedCorners) {
     visionSourceImg = img;
-    // Swap connect → crop state: widen the modal so the canvas flexes to fill it
-    document.querySelector('.vision-modal')?.classList.add('cropping');
+    // Advance stepper to phase 2 (Crop & Detect); widen the modal
+    setVisionPhase(2);
+    _cropDirty = true;
     const hint = document.getElementById('visionCropHint');
     if (hint) {
         hint.classList.remove('faded');
@@ -1758,11 +1759,11 @@ function showVisionPreview(img, detectedCorners) {
 
     const pill = document.getElementById('visionCropStatus');
     if (pill) {
-        pill.textContent = valid
-            ? '✓ Page auto-detected — fine-tune if needed'
-            : 'Drag each corner to a paper edge';
+        pill.textContent = valid ? '✓ Page detected' : 'Drag each corner to a paper edge';
         pill.style.color = valid ? '#10b981' : '#60a5fa';
     }
+    // Populate the phase-2 "Detected colours" card without waiting for Continue
+    scheduleCropDetect();
 }
 
 // Fit the whole photo into the canvas box at z=1 and centre it (retries until laid out).
@@ -1794,7 +1795,11 @@ function drawCropOverlay() {
     const { boxW, boxH } = cropView;
     if (!boxW || !boxH) return;
     const dpr = window.devicePixelRatio || 1;
-    cv.width = Math.round(boxW * dpr); cv.height = Math.round(boxH * dpr);
+    // Only resize the backing store when it actually changes — reallocating it on
+    // every pointermove drops intermediate frames so a dragged corner looks frozen
+    // until release.
+    const needW = Math.round(boxW * dpr), needH = Math.round(boxH * dpr);
+    if (cv.width !== needW || cv.height !== needH) { cv.width = needW; cv.height = needH; }
     const ctx = cv.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, boxW, boxH);
@@ -1870,9 +1875,13 @@ function bindCropPointer() {
         }
     };
     const up = () => {
+        const movedCorner = _activeCorner >= 0;   // a crop corner was just adjusted
         _activeCorner = -1; _isPanning = false; _lastPan = null;
         cv.style.cursor = 'grab';
         document.getElementById('visionLoupe').style.display = 'none';
+        // Corner moved → the flatten/analysis is stale: re-detect so the colours
+        // card updates now AND "Continue" re-flattens with the corrected crop.
+        if (movedCorner) { _cropDirty = true; scheduleCropDetect(); }
     };
     const leave = () => {
         if (_activeCorner < 0 && !_isPanning) document.getElementById('visionLoupe').style.display = 'none';
@@ -2085,113 +2094,169 @@ const _lastOpForColor = {};
 function rgbHex(rgb) { return '#' + rgb.map(v => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('').toUpperCase(); }
 function rgbDist(a, b) { const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2]; return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db) / 3; }
 
-// ── Single-window Review (Connect + Crop are the modal's earlier states) ──────
-// One screen: preview (zoom/pan) · colours+operations · background · fine-tune.
+// ── 3-phase wizard: Connect (1) · Crop & Detect (2) · Review & Vectorize (3) ──
 let _wiz = null;
+let _cropDirty = true;      // crop changed since last analysis → re-detect needed
+let _cropDetectTimer = null;
 
-function runExtractDrawing() {
+// Switch the visible phase + update the numbered stepper.
+function setVisionPhase(n) {
+    const m = document.querySelector('.vision-modal'); if (!m) return;
+    m.setAttribute('data-phase', String(n));
+    m.classList.toggle('cropping', n >= 2);
+    for (let i = 1; i <= 3; i++) {
+        const el = document.getElementById('vstep' + i); if (!el) continue;
+        el.classList.toggle('active', i === n);
+        el.classList.toggle('done', i < n);
+    }
+    if (n === 3) requestAnimationFrame(() => { ensurePreviewBound(); drawWizPreview(); });
+}
+
+// Debounced background detection so the phase-2 colours card fills in on its own.
+function scheduleCropDetect() {
+    clearTimeout(_cropDetectTimer);
+    _cropDetectTimer = setTimeout(() => { if (_cropDirty) detectColours(); }, 400);
+}
+
+// Heavy stage: flatten → substrate → skeletonise → refine (+ filters).
+function detectColours(cb) {
     if (!canvasEditor) return;
     const pill = document.getElementById('visionCropStatus');
     try {
-        if (pill) { pill.textContent = 'Flattening…'; pill.style.color = '#fbbf24'; }
         const res = flattenCroppedPage();
         if (!res) return;
-        if (pill) pill.textContent = 'Reading page…';
         setTimeout(() => {
             try {
                 _extractFlat = res;
                 const sub = estimateSubstrate(res.out);
-                _wiz = { bg: sub.rgb, accuracy: 0.5, simplify: 0.4, skel: null, eyedrop: false, assignments: {}, view: null, ftOpen: false };
+                const p = _wiz || {};
+                _wiz = {
+                    bg: sub.rgb,
+                    accuracy: p.accuracy ?? 0.5, simplify: p.simplify ?? 0.4,
+                    denoise: p.denoise ?? true, minLen: p.minLen ?? 2, mergeTol: p.mergeTol ?? 40,
+                    overlay: p.overlay ?? true, hidden: {},
+                    skel: null, eyedrop: false, assignments: p.assignments || {}, view: null,
+                };
                 reanalyzeWiz();
-                document.getElementById('visionExtractPanel').classList.remove('hidden');
-                const f = document.querySelector('.vision-footer'); if (f) f.style.display = 'none'; // one window, one footer
-                renderWizard();
-                if (pill) pill.textContent = '';
+                _cropDirty = false;
+                renderCropColours();
+                renderReview();
+                if (pill && pill.textContent === 'Reading page…') pill.textContent = '✓ Page detected';
+                if (cb) cb();
             } catch (err) {
-                console.error('wizard start:', err);
-                if (pill) { pill.textContent = 'Extraction failed.'; pill.style.color = '#ef4444'; }
+                console.error('detectColours:', err);
+                if (pill) { pill.textContent = 'Detection failed.'; pill.style.color = '#ef4444'; }
             }
         }, 30);
     } catch (e) {
-        console.error('runExtractDrawing:', e);
-        if (pill) { pill.textContent = 'Extraction failed.'; pill.style.color = '#ef4444'; }
+        console.error('detectColours:', e);
     }
 }
 
-// Heavy stage: (re)run skeletonisation for the current background, then refine.
+// Measure an SVG path 'd' length in flattened-image pixels (for noise filtering).
+const _lenSvgPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+function pathLenPx(d) { try { _lenSvgPath.setAttribute('d', d); return _lenSvgPath.getTotalLength(); } catch (e) { return Infinity; } }
+
+// Refine paths from the current settings, then drop noise strokes below minLen.
+function recompute() {
+    const w = _wiz; if (!w || !w.skel) return;
+    refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify });
+    const minLen = w.denoise ? Math.max(1, w.minLen || 0) : 0;
+    if (minLen > 0) {
+        for (const col of w.skel.colors) {
+            if (Array.isArray(col.paths)) col.paths = col.paths.filter(d => pathLenPx(d) >= minLen);
+        }
+    }
+}
+
+// (re)run skeletonisation for the current background, then recompute.
 function reanalyzeWiz() {
     const w = _wiz; if (!w) return;
     try {
         w.skel = analyzeSkeletons(_extractFlat.out, _extractFlat.paperW, _extractFlat.paperH, { bg: w.bg });
-        refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify });
+        recompute();
     } catch (e) { console.error('analyzeSkeletons:', e); w.skel = null; }
 }
 
-// One clean Review screen: preview · colours+operations · background · fine-tune.
-function renderWizard() {
+// Merge every colour pair whose RGB distance is within the tolerance slider.
+function mergeSimilarColours() {
+    const w = _wiz; if (!w || !w.skel) return;
+    const tol = 8 + (w.mergeTol / 100) * 40;   // 8‥48 ΔE-ish
+    const C = w.skel.colors;
+    for (let i = C.length - 1; i >= 1; i--) {
+        for (let j = 0; j < i; j++) {
+            if (rgbDist(C[i].rgb, C[j].rgb) < tol) {
+                const wa = C[j].count || 1, wb = C[i].count || 1;
+                C[j].rgb = C[j].rgb.map((v, k) => Math.round((v * wa + C[i].rgb[k] * wb) / (wa + wb)));
+                C[j].rawPolys = (C[j].rawPolys || []).concat(C[i].rawPolys || []);
+                if (C[j].mask && C[i].mask) { const m = C[j].mask, o = C[i].mask; for (let k = 0; k < m.length; k++) if (o[k]) m[k] = 1; }
+                C[j].count = wa + wb; C.splice(i, 1); break;
+            }
+        }
+    }
+    recompute(); renderCropColours(); renderReview();
+}
+
+// ── Phase-2 read-only colour summary ─────────────────────────────────────────
+function renderCropColours() {
+    const w = _wiz;
+    const host = document.getElementById('vcCropColours'); if (!host) return;
+    const cols = (w && w.skel) ? w.skel.colors : [];
+    document.getElementById('vcCropColourCount').textContent = cols.length ? `(${cols.length})` : '';
+    host.innerHTML = cols.length
+        ? cols.map(c => `<div class="vc-crop-crow">
+              <span class="vc-dot" style="background:rgb(${c.rgb.join(',')})"></span>
+              <span class="vc-cname">${c.name}</span>
+              <span class="vc-chex">${rgbHex(c.rgb)}</span>
+           </div>`).join('')
+        : '<div class="vc-muted">No distinct ink detected yet.</div>';
+    if (w) {
+        document.getElementById('vcCropBgSwatch').style.background = `rgb(${w.bg.join(',')})`;
+        document.getElementById('vcCropBgHex').textContent = rgbHex(w.bg);
+    }
+}
+
+// ── Phase-3 review: colour list + vector settings ────────────────────────────
+function renderReview() {
     const w = _wiz; if (!w) return;
     const cols = w.skel ? w.skel.colors : [];
-    document.getElementById('vexPaperTag').textContent = _extractFlat ? `${_extractFlat.paperW} × ${_extractFlat.paperH} mm` : '';
-    document.getElementById('wizNext').disabled = !cols.length;
+    document.getElementById('vcRevColourCount').textContent = cols.length ? `(${cols.length})` : '';
+    const nextBtn = document.getElementById('wizNext'); if (nextBtn) nextBtn.disabled = !cols.length;
 
-    const colourRows = !cols.length
-        ? '<div class="vex-empty">No distinct ink detected — try “change” background, or ‹ Back to re-crop / improve lighting.</div>'
+    const list = document.getElementById('vcColourList');
+    list.innerHTML = !cols.length
+        ? '<div class="vc-muted">No distinct ink detected — go Back to re-crop or improve lighting.</div>'
         : cols.map((col, i) => {
-            let simTo = -1; for (let j = 0; j < i; j++) { if (rgbDist(col.rgb, cols[j].rgb) < 26) { simTo = j; break; } }
             const suggested = w.assignments[i] || _lastOpForColor[rgbHex(col.rgb)] || 'draw';
             const opts = OP_OPTIONS.map(o => `<option value="${o.v}" ${o.v === suggested ? 'selected' : ''}>${o.label}</option>`).join('');
-            return `<div class="vex-crow">
-                <span class="vex-swatch" style="background:rgb(${col.rgb.join(',')})"></span>
-                <span class="vex-cname">${col.name}<small>${rgbHex(col.rgb)}</small></span>
-                ${simTo >= 0 ? `<button class="vex-merge" data-i="${i}" data-j="${simTo}" title="Looks like ${rgbHex(cols[simTo].rgb)}">merge</button>` : ''}
-                <select class="vex-op" data-idx="${i}">${opts}</select>
+            const off = w.hidden[i] ? ' off' : '';
+            return `<div class="vc-crow">
+                <span class="vc-dot" style="background:rgb(${col.rgb.join(',')})"></span>
+                <span class="vc-cname">${col.name}</span>
+                <span class="vc-chex">${rgbHex(col.rgb)}</span>
+                <select class="vc-op" data-idx="${i}">${opts}</select>
+                <button class="vc-roweye${off}" data-idx="${i}" title="Show / hide in preview">👁</button>
             </div>`;
         }).join('');
 
-    const body = document.getElementById('wizBody');
-    body.innerHTML =
-        `<canvas id="wizPreviewCanvas" class="vex-preview"></canvas>
-         <div>
-            <div class="vex-section-label">Colours</div>
-            <div class="vex-colours">${colourRows}</div>
-         </div>
-         <div class="vex-bgline">
-            <span class="vex-bg-swatch" style="background:rgb(${w.bg.join(',')})"></span>
-            Background <b>${rgbHex(w.bg)}</b> ·
-            <button id="wizEyedrop" class="vex-link ${w.eyedrop ? 'active' : ''}">${w.eyedrop ? 'click the image…' : 'change'}</button>
-         </div>
-         <div>
-            <button id="vexFtToggle" class="vex-ft-toggle">⚙ Fine-tune ${w.ftOpen ? '▴' : '▾'}</button>
-            <div id="vexFtBody" class="vex-ft-body" style="${w.ftOpen ? '' : 'display:none'}">
-               <div class="vex-slider"><label>Detail</label><input type="range" min="0" max="100" value="${Math.round(w.accuracy * 100)}" id="wizAcc"><div class="vex-slabels"><span>Smooth</span><span>Accurate</span></div></div>
-               <div class="vex-slider"><label>Simplify</label><input type="range" min="0" max="100" value="${Math.round(w.simplify * 100)}" id="wizSimp"><div class="vex-slabels"><span>Detailed</span><span>Simplified</span></div></div>
-            </div>
-         </div>`;
-
-    const cv = document.getElementById('wizPreviewCanvas');
-    attachPreviewControls(cv, { eyedrop: true, cssH: 200 });
-    drawWizPreview();
-
-    document.getElementById('wizEyedrop').onclick = (e) => {
-        w.eyedrop = !w.eyedrop; e.target.classList.toggle('active', w.eyedrop);
-        e.target.textContent = w.eyedrop ? 'click the image…' : 'change';
-        cv.style.cursor = w.eyedrop ? 'crosshair' : 'grab';
-    };
-    document.getElementById('vexFtToggle').onclick = () => { w.ftOpen = !w.ftOpen; renderWizard(); };
-    const relight = () => { refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify }); drawWizPreview(); };
-    const acc = document.getElementById('wizAcc'); if (acc) acc.oninput = (e) => { w.accuracy = e.target.value / 100; relight(); };
-    const simp = document.getElementById('wizSimp'); if (simp) simp.oninput = (e) => { w.simplify = e.target.value / 100; relight(); };
-    body.querySelectorAll('.vex-op').forEach(sel => sel.onchange = () => { w.assignments[+sel.dataset.idx] = sel.value; });
-    body.querySelectorAll('.vex-merge').forEach(btn => btn.onclick = () => {
-        const i = +btn.dataset.i, j = +btn.dataset.j, C = w.skel.colors;
-        if (!C[i] || !C[j]) return;
-        const wa = C[j].count || 1, wb = C[i].count || 1;
-        C[j].rgb = C[j].rgb.map((v, k) => Math.round((v * wa + C[i].rgb[k] * wb) / (wa + wb)));
-        C[j].rawPolys = C[j].rawPolys.concat(C[i].rawPolys);
-        if (C[j].mask && C[i].mask) { const m = C[j].mask, o = C[i].mask; for (let k = 0; k < m.length; k++) if (o[k]) m[k] = 1; }
-        C[j].count = wa + wb; C.splice(i, 1);
-        refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify }); renderWizard();
+    list.querySelectorAll('.vc-op').forEach(sel => sel.onchange = () => { w.assignments[+sel.dataset.idx] = sel.value; });
+    list.querySelectorAll('.vc-roweye').forEach(btn => btn.onclick = () => {
+        const i = +btn.dataset.idx; w.hidden[i] = !w.hidden[i];
+        btn.classList.toggle('off', !!w.hidden[i]); drawWizPreview();
     });
+
+    // reflect settings state
+    const setVal = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+    const setTxt = (id, t) => { const e = document.getElementById(id); if (e) e.textContent = t; };
+    setVal('wizAcc', Math.round(w.accuracy * 100)); setTxt('vcAccVal', Math.round(w.accuracy * 100) + '%');
+    setVal('wizSimp', Math.round(w.simplify * 100)); setTxt('vcSimpVal', Math.round(w.simplify * 100) + '%');
+    setVal('vcMinLen', w.minLen); setTxt('vcMinLenVal', w.minLen + ' px');
+    setVal('vcMergeTol', w.mergeTol); setTxt('vcMergeVal', w.mergeTol + '%');
+    const dn = document.getElementById('vcDenoise'); if (dn) dn.checked = !!w.denoise;
+    document.querySelectorAll('#vcModeOverlay,#vcModeVector').forEach(b => b.classList.remove('active'));
+    document.getElementById(w.overlay ? 'vcModeOverlay' : 'vcModeVector')?.classList.add('active');
+
+    drawWizPreview();
 }
 
 // ── preview canvas with zoom (wheel) + pan (drag), shared by both pages ───────
@@ -2202,8 +2267,9 @@ function fitPreviewCanvas(cv, cssH) {
     return dpr;
 }
 function drawWizPreview() {
-    const cv = document.getElementById('wizPreviewCanvas'); if (!cv || !_extractFlat) return;
-    fitPreviewCanvas(cv, cv._cssH);
+    const cv = document.getElementById('wizPreviewCanvas'); if (!cv || !_extractFlat || !_wiz) return;
+    if (!cv.clientWidth) return;   // not laid out yet (phase hidden)
+    fitPreviewCanvas(cv, cv.clientHeight || cv._cssH);
     const ctx = cv.getContext('2d');
     const img = _extractFlat.out;
     const refW = _wiz.skel ? _wiz.skel.w : img.width, refH = _wiz.skel ? _wiz.skel.h : img.height;
@@ -2212,18 +2278,29 @@ function drawWizPreview() {
     const s = fit * _wiz.view.z;
     const ox = cv.width / 2 - _wiz.view.cx * s, oy = cv.height / 2 - _wiz.view.cy * s;
     ctx.clearRect(0, 0, cv.width, cv.height);
-    ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, cv.width, cv.height);
-    ctx.globalAlpha = 0.3; ctx.drawImage(img, 0, 0, img.width, img.height, ox, oy, refW * s, refH * s); ctx.globalAlpha = 1;
+    ctx.fillStyle = '#f4f0e9'; ctx.fillRect(0, 0, cv.width, cv.height);
+    if (_wiz.overlay) {
+        ctx.globalAlpha = 0.55; ctx.drawImage(img, 0, 0, img.width, img.height, ox, oy, refW * s, refH * s); ctx.globalAlpha = 1;
+    }
     cv._fit = { scale: s, ox, oy, refW, refH };
     if (_wiz.skel) {
         ctx.save(); ctx.translate(ox, oy); ctx.scale(s, s);
-        ctx.lineWidth = 1.6 / s; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        for (const col of _wiz.skel.colors) {
+        ctx.lineWidth = 1.8 / s; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        _wiz.skel.colors.forEach((col, i) => {
+            if (_wiz.hidden && _wiz.hidden[i]) return;
             ctx.strokeStyle = `rgb(${col.rgb.join(',')})`;
             for (const d of (col.paths || [])) { try { ctx.stroke(new Path2D(d)); } catch (e) {} }
-        }
+        });
         ctx.restore();
     }
+    const pct = document.getElementById('vcZoomPct'); if (pct) pct.textContent = Math.round(_wiz.view.z * 100) + '%';
+}
+
+// Attach zoom/pan/eyedrop to the review preview canvas exactly once.
+function ensurePreviewBound() {
+    const cv = document.getElementById('wizPreviewCanvas'); if (!cv || cv._bound) return;
+    attachPreviewControls(cv, { eyedrop: true, cssH: 320 });
+    cv._bound = true;
 }
 // Attach zoom/pan (and optional eyedropper) to the current preview canvas.
 function attachPreviewControls(cv, opts = {}) {
@@ -2270,19 +2347,11 @@ function attachPreviewControls(cv, opts = {}) {
             const tc = tmp.getContext('2d'); tc.drawImage(img, sx, sy, 1, 1, 0, 0, 1, 1);
             const d = tc.getImageData(0, 0, 1, 1).data;
             _wiz.bg = [d[0], d[1], d[2]]; _wiz.eyedrop = false;
-            reanalyzeWiz(); renderWizard();
+            reanalyzeWiz(); renderReview(); renderCropColours();
         };
     }
 }
 
-
-function wizNext() { if (_wiz) wizInsert(); }               // single screen → Add to Canvas
-function wizPrev() { exitExtractToCrop(); }                 // Back → crop (same window)
-// Show the crop view + footer, hide the extract phases (no window change).
-function exitExtractToCrop() {
-    document.getElementById('visionExtractPanel')?.classList.add('hidden');
-    const f = document.querySelector('.vision-footer'); if (f) f.style.display = '';
-}
 
 function wizInsert() {
     const w = _wiz; if (!w || !w.skel) return;
@@ -2312,10 +2381,92 @@ function wizInsert() {
 
 document.getElementById('visionPaperSize')?.addEventListener('change', (e) => {
     document.getElementById('visionCustomSize').style.display = e.target.value === 'custom' ? 'flex' : 'none';
+    _cropDirty = true; scheduleCropDetect();
 });
-document.getElementById('btnVisionExtract')?.addEventListener('click', runExtractDrawing);
-document.getElementById('wizNext')?.addEventListener('click', wizNext);
-document.getElementById('wizPrev')?.addEventListener('click', wizPrev);
+document.getElementById('visionPaperW')?.addEventListener('change', () => { _cropDirty = true; scheduleCropDetect(); });
+document.getElementById('visionPaperH')?.addEventListener('change', () => { _cropDirty = true; scheduleCropDetect(); });
+
+// Phase 2 → 3: (re)detect if crop changed, then advance to Review.
+document.getElementById('btnVisionContinue')?.addEventListener('click', () => {
+    const go = () => setVisionPhase(3);
+    if (_cropDirty || !_wiz || !_wiz.skel) detectColours(go); else go();
+});
+document.getElementById('vcBackTo1')?.addEventListener('click', () => {
+    resetVisionToConnect();
+    const status = document.getElementById('visionStatusText');
+    if (status && peer && !peer.destroyed) {
+        status.innerHTML = (peerConnection && peerConnection.open)
+            ? 'Phone connected — send another photo, or upload from PC.'
+            : '<span class="vc-spinner"></span> Waiting for phone connection...';
+    }
+});
+document.getElementById('vcBackTo2')?.addEventListener('click', () => setVisionPhase(2));
+document.getElementById('wizNext')?.addEventListener('click', () => { if (_wiz) wizInsert(); });
+
+// Phase-2 crop rail
+function rotateSource(dir) {
+    if (!visionSourceImg) return;
+    const nw = visionSourceImg.naturalWidth || visionSourceImg.width, nh = visionSourceImg.naturalHeight || visionSourceImg.height;
+    const c = document.createElement('canvas'); c.width = nh; c.height = nw;
+    const ctx = c.getContext('2d');
+    ctx.translate(c.width / 2, c.height / 2); ctx.rotate(dir * Math.PI / 2); ctx.drawImage(visionSourceImg, -nw / 2, -nh / 2);
+    const img = new Image();
+    img.onload = () => { showVisionPreview(img, null); };
+    img.src = c.toDataURL('image/png');
+}
+document.getElementById('vcRotL')?.addEventListener('click', () => rotateSource(-1));
+document.getElementById('vcRotR')?.addEventListener('click', () => rotateSource(1));
+document.getElementById('vcReset')?.addEventListener('click', () => { if (visionSourceImg) showVisionPreview(visionSourceImg, null); });
+document.getElementById('vcZoom')?.addEventListener('click', () => { try { fitCropView(); } catch (e) {} });
+
+// Phase-3 review controls
+function setOverlayMode(on) { if (!_wiz) return; _wiz.overlay = on;
+    document.getElementById('vcModeOverlay')?.classList.toggle('active', on);
+    document.getElementById('vcModeVector')?.classList.toggle('active', !on);
+    drawWizPreview();
+}
+document.getElementById('vcModeOverlay')?.addEventListener('click', () => setOverlayMode(true));
+document.getElementById('vcModeVector')?.addEventListener('click', () => setOverlayMode(false));
+function zoomPreview(f) {
+    if (!_wiz || !_wiz.view) return;
+    _wiz.view.z = Math.max(1, Math.min(12, _wiz.view.z * f)); drawWizPreview();
+}
+document.getElementById('vcZoomIn')?.addEventListener('click', () => zoomPreview(1.25));
+document.getElementById('vcZoomOut')?.addEventListener('click', () => zoomPreview(1 / 1.25));
+document.getElementById('vcZoomFit')?.addEventListener('click', () => {
+    if (!_wiz || !_wiz.skel) return;
+    _wiz.view = { z: 1, cx: _wiz.skel.w / 2, cy: _wiz.skel.h / 2 }; drawWizPreview();
+});
+document.getElementById('vcSettingsToggle')?.addEventListener('click', (e) => {
+    const body = document.getElementById('vcSettingsBody');
+    const hide = !body.classList.contains('collapsed');
+    body.classList.toggle('collapsed', hide);
+    const caret = e.currentTarget.querySelector('.vc-collapse');
+    if (caret) caret.textContent = hide ? '▸' : '▾';
+});
+
+const _liveRefine = () => { recompute(); drawWizPreview(); };
+document.getElementById('wizAcc')?.addEventListener('input', (e) => {
+    if (!_wiz) return; _wiz.accuracy = e.target.value / 100;
+    document.getElementById('vcAccVal').textContent = e.target.value + '%'; _liveRefine();
+});
+document.getElementById('wizSimp')?.addEventListener('input', (e) => {
+    if (!_wiz) return; _wiz.simplify = e.target.value / 100;
+    document.getElementById('vcSimpVal').textContent = e.target.value + '%'; _liveRefine();
+});
+document.getElementById('vcMinLen')?.addEventListener('input', (e) => {
+    if (!_wiz) return; _wiz.minLen = +e.target.value;
+    document.getElementById('vcMinLenVal').textContent = e.target.value + ' px';
+});
+document.getElementById('vcMinLen')?.addEventListener('change', _liveRefine);
+document.getElementById('vcMergeTol')?.addEventListener('input', (e) => {
+    if (!_wiz) return; _wiz.mergeTol = +e.target.value;
+    document.getElementById('vcMergeVal').textContent = e.target.value + '%';
+});
+document.getElementById('vcDenoise')?.addEventListener('change', (e) => {
+    if (!_wiz) return; _wiz.denoise = e.target.checked; _liveRefine();
+});
+document.getElementById('vcMergeSimilar')?.addEventListener('click', mergeSimilarColours);
 
 // Upload a saved image straight from the PC (same detect → crop → flatten flow)
 document.getElementById('btnVisionUpload')?.addEventListener('click', () => {
@@ -2342,12 +2493,11 @@ document.getElementById('visionUploadInput')?.addEventListener('change', (e) => 
 
 // Back to the connect (QR / upload) state — used on modal open and "New photo"
 function resetVisionToConnect() {
-    document.querySelector('.vision-modal')?.classList.remove('cropping');
+    setVisionPhase(1);
     const qrContainer = document.getElementById('visionQrContainer');
     if (qrContainer) qrContainer.style.display = 'flex';
-    document.getElementById('visionLoupe').style.display = 'none';
-    document.getElementById('visionExtractPanel')?.classList.add('hidden');
-    const f = document.querySelector('.vision-footer'); if (f) f.style.display = '';
+    const loupe = document.getElementById('visionLoupe'); if (loupe) loupe.style.display = 'none';
+    _cropDirty = true;
     _extractResult = null;
     _extractFlat = null;
     _wiz = null;
