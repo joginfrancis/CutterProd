@@ -37,7 +37,7 @@ import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
 import { CanvasEditor } from './CanvasEditor.js?v=12';
-import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG } from './DrawingVectorizer.js?v=10';
+import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG } from './DrawingVectorizer.js?v=15';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -2133,6 +2133,8 @@ function detectColours(cb) {
                 _wiz = {
                     bg: sub.rgb,
                     accuracy: p.accuracy ?? 0.5, simplify: p.simplify ?? 0.4,
+                    cornerSharp: p.cornerSharp ?? 0.4, closeLoops: p.closeLoops ?? true,
+                    hueTolDeg: p.hueTolDeg ?? 18,
                     denoise: p.denoise ?? true, minLen: p.minLen ?? 2, mergeTol: p.mergeTol ?? 40,
                     overlay: p.overlay ?? true, hidden: {},
                     skel: null, eyedrop: false, assignments: p.assignments || {}, view: null,
@@ -2160,7 +2162,7 @@ function pathLenPx(d) { try { _lenSvgPath.setAttribute('d', d); return _lenSvgPa
 // Refine paths from the current settings, then drop noise strokes below minLen.
 function recompute() {
     const w = _wiz; if (!w || !w.skel) return;
-    refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify });
+    refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify, cornerSharp: w.cornerSharp, closeLoops: w.closeLoops });
     const minLen = w.denoise ? Math.max(1, w.minLen || 0) : 0;
     if (minLen > 0) {
         for (const col of w.skel.colors) {
@@ -2173,7 +2175,7 @@ function recompute() {
 function reanalyzeWiz() {
     const w = _wiz; if (!w) return;
     try {
-        w.skel = analyzeSkeletons(_extractFlat.out, _extractFlat.paperW, _extractFlat.paperH, { bg: w.bg });
+        w.skel = analyzeSkeletons(_extractFlat.out, _extractFlat.paperW, _extractFlat.paperH, { bg: w.bg, hueTolDeg: w.hueTolDeg });
         recompute();
     } catch (e) { console.error('analyzeSkeletons:', e); w.skel = null; }
 }
@@ -2252,7 +2254,10 @@ function renderReview() {
     setVal('wizSimp', Math.round(w.simplify * 100)); setTxt('vcSimpVal', Math.round(w.simplify * 100) + '%');
     setVal('vcMinLen', w.minLen); setTxt('vcMinLenVal', w.minLen + ' px');
     setVal('vcMergeTol', w.mergeTol); setTxt('vcMergeVal', w.mergeTol + '%');
+    setVal('vcCorner', Math.round(w.cornerSharp * 100)); setTxt('vcCornerVal', Math.round(w.cornerSharp * 100) + '%');
+    setVal('vcHueTol', w.hueTolDeg); setTxt('vcHueTolVal', w.hueTolDeg + '°');
     const dn = document.getElementById('vcDenoise'); if (dn) dn.checked = !!w.denoise;
+    const cl = document.getElementById('vcCloseLoops'); if (cl) cl.checked = !!w.closeLoops;
     document.querySelectorAll('#vcModeOverlay,#vcModeVector').forEach(b => b.classList.remove('active'));
     document.getElementById(w.overlay ? 'vcModeOverlay' : 'vcModeVector')?.classList.add('active');
 
@@ -2465,6 +2470,21 @@ document.getElementById('vcMergeTol')?.addEventListener('input', (e) => {
 });
 document.getElementById('vcDenoise')?.addEventListener('change', (e) => {
     if (!_wiz) return; _wiz.denoise = e.target.checked; _liveRefine();
+});
+document.getElementById('vcCorner')?.addEventListener('input', (e) => {
+    if (!_wiz) return; _wiz.cornerSharp = e.target.value / 100;
+    document.getElementById('vcCornerVal').textContent = e.target.value + '%'; _liveRefine();
+});
+document.getElementById('vcCloseLoops')?.addEventListener('change', (e) => {
+    if (!_wiz) return; _wiz.closeLoops = e.target.checked; _liveRefine();
+});
+document.getElementById('vcHueTol')?.addEventListener('input', (e) => {
+    if (!_wiz) return; _wiz.hueTolDeg = +e.target.value;
+    document.getElementById('vcHueTolVal').textContent = e.target.value + '°';
+});
+// Re-clustering is the heavy pass — run it on release, not every input tick.
+document.getElementById('vcHueTol')?.addEventListener('change', () => {
+    if (!_wiz) return; reanalyzeWiz(); renderCropColours(); renderReview();
 });
 document.getElementById('vcMergeSimilar')?.addEventListener('click', mergeSimilarColours);
 

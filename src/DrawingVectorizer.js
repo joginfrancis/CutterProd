@@ -99,16 +99,25 @@ function straightness(a, b, c) {
 // segment so gentle curves can never overshoot/balloon outward. The canvas importer
 // tessellates the resulting C-segments back to points for editing/CAM.
 // tension (0..~1): smoothing strength. 0 → straight polyline (accurate), higher → rounder.
-function toPathD(pts, tension = 0.9) {
+// cornerSharp (0..1): raises the straightness weighting exponent, shrinking handles
+// harder at bends — knife/crease corners come out crisp instead of rounded.
+// closed: treat pts as a loop — wrap-around tangents + 'Z' so the machine sees one
+// continuous closed contour (no uncut tab / seam at the join).
+function toPathD(pts, tension = 0.9, cornerSharp = 0, closed = false) {
     if (!pts.length) return '';
     if (pts.length === 1) return `M ${num(pts[0].x)},${num(pts[0].y)}`;
     if (pts.length === 2) return `M ${num(pts[0].x)},${num(pts[0].y)} L ${num(pts[1].x)},${num(pts[1].y)}`;
     const T = tension;
+    const exp = 1 + cornerSharp * 4;   // 0 → current behaviour, 1 → very crisp corners
+    const sharp = (a, b, c) => Math.pow(straightness(a, b, c), exp);
     const cap = (hx, hy, max) => { const l = Math.hypot(hx, hy); return l > max && l > 0 ? [hx * max / l, hy * max / l] : [hx, hy]; };
+    const n = pts.length;
+    const at = (i) => closed ? pts[((i % n) + n) % n] : pts[Math.max(0, Math.min(n - 1, i))];
     let d = `M ${num(pts[0].x)},${num(pts[0].y)}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-        const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-        const s1 = straightness(p0, p1, p2), s2 = straightness(p1, p2, p3);
+    const segsN = closed ? n : n - 1;   // closed: extra segment back to the start
+    for (let i = 0; i < segsN; i++) {
+        const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+        const s1 = sharp(p0, p1, p2), s2 = sharp(p1, p2, p3);
         const seg = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
         let [h1x, h1y] = cap((p2.x - p0.x) * T / 6 * s1, (p2.y - p0.y) * T / 6 * s1, seg / 3);
         let [h2x, h2y] = cap((p3.x - p1.x) * T / 6 * s2, (p3.y - p1.y) * T / 6 * s2, seg / 3);
@@ -116,6 +125,7 @@ function toPathD(pts, tension = 0.9) {
         const c2 = { x: p2.x - h2x, y: p2.y - h2y };
         d += ` C ${num(c1.x)},${num(c1.y)} ${num(c2.x)},${num(c2.y)} ${num(p2.x)},${num(p2.y)}`;
     }
+    if (closed) d += ' Z';
     return d;
 }
 
@@ -155,7 +165,11 @@ function mergeCentroids(cents, hueTolRad, cMin) {
             const oc = chromaOf(o), oh = hueOf(o);
             if (cc < cMin && oc < cMin) return true;       // both near-neutral (black/gray) → one bucket
             if (cc < cMin || oc < cMin) return false;      // one neutral, one chromatic → keep apart
-            return angDiff(ch, oh) < hueTolRad;            // both chromatic → merge same-hue shades
+            // Both chromatic → merge same-hue shades (an ink's core + antialias fringe
+            // share hue but differ a lot in L/chroma, so hue is the only safe test here).
+            // Distinct-but-close hues (green ~145° vs teal ~174°) are separated by
+            // keeping the tolerance below their gap — user-tunable via Colour separation.
+            return angDiff(ch, oh) < hueTolRad;
         });
         if (!hit) out.push(c.slice());
     }
@@ -257,15 +271,63 @@ export function analyzeSkeletons(sourceCanvas, paperW, paperH, opts = {}) {
     const cap = 30000, stepS = Math.max(1, Math.floor(inkIdx.length / cap));
     const samples = [];
     for (let s = 0; s < inkIdx.length; s += stepS) { const i = inkIdx[s]; samples.push([lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]]); }
-    const cents = mergeCentroids(kmeans(samples, K_INIT), HUE_MERGE_RAD, CHROMA_MIN);
+    // Colour separation control: lower tolerance keeps close hues (green vs teal)
+    // apart; higher collapses shades of one marker. UI slider → opts.hueTolDeg.
+    const hueTol = opts.hueTolDeg != null ? opts.hueTolDeg * Math.PI / 180 : HUE_MERGE_RAD;
+    const cents = mergeCentroids(kmeans(samples, K_INIT), hueTol, CHROMA_MIN);
 
+    // Pixel → cluster assignment. HUE-FIRST for chromatic pixels: a stroke's
+    // antialias fringe (ink blended toward paper) keeps the ink's hue but shifts
+    // L/chroma a lot, so plain ΔE hands fringes to a *neighbouring* ink (green
+    // fringe → teal) and skeletonizes ghost outlines in the wrong colour.
+    // Hue distance keeps core + fringe together; ΔE only breaks ties and handles
+    // neutral (black/grey) pens.
+    const cHue = cents.map(hueOf), cChr = cents.map(chromaOf);
     const counts = new Array(cents.length).fill(0);
     const assign = new Int32Array(N).fill(-1);
     for (const i of inkIdx) {
-        let bi = 0, bd = Infinity; const pl = [lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]];
-        for (let c = 0; c < cents.length; c++) { const d = deltaE(pl, cents[c]); if (d < bd) { bd = d; bi = c; } }
+        const pl = [lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]];
+        const pChr = chromaOf(pl), pHue = hueOf(pl);
+        let bi = 0, bd = Infinity;
+        for (let c = 0; c < cents.length; c++) {
+            const dE = deltaE(pl, cents[c]);
+            let d;
+            if (pChr >= CHROMA_MIN && cChr[c] >= CHROMA_MIN) {
+                d = angDiff(pHue, cHue[c]) * 60 + dE * 0.2;   // hue dominates, ΔE tie-breaks
+            } else if (pChr < CHROMA_MIN && cChr[c] < CHROMA_MIN) {
+                d = dE;                                        // neutral pixel ↔ neutral pen
+            } else {
+                d = dE + 25;                                   // chromatic↔neutral mismatch penalty
+            }
+            if (d < bd) { bd = d; bi = c; }
+        }
         assign[i] = bi; counts[bi]++;
     }
+
+    // Spatial majority vote (5×5): any leftover misassigned fringe (a 1–2 px band
+    // along a much thicker stroke of another colour) is reassigned to the local
+    // majority, so it can't skeletonize into ghost dashes beside the real stroke.
+    if (cents.length > 1) {
+        const voted = new Int32Array(assign);
+        for (const i of inkIdx) {
+            const x = i % w, y = (i / w) | 0;
+            const tally = {};
+            let bestC = assign[i], bestN = 0;
+            for (let dy = -2; dy <= 2; dy++) {
+                const yy = y + dy; if (yy < 0 || yy >= h) continue;
+                for (let dx = -2; dx <= 2; dx++) {
+                    const xx = x + dx; if (xx < 0 || xx >= w) continue;
+                    const a = assign[yy * w + xx]; if (a < 0) continue;
+                    const n = (tally[a] = (tally[a] || 0) + 1);
+                    if (n > bestN) { bestN = n; bestC = a; }
+                }
+            }
+            voted[i] = bestC;
+        }
+        counts.fill(0);
+        for (const i of inkIdx) { assign[i] = voted[i]; counts[assign[i]]++; }
+    }
+
     const minCount = inkIdx.length * MIN_CLUSTER_FRAC;
     const keep = cents.map((_, c) => counts[c] >= minCount);
 
@@ -317,20 +379,30 @@ export function analyzeSkeletons(sourceCanvas, paperW, paperH, opts = {}) {
 export function refinePaths(skel, opts = {}) {
     const accuracy = opts.accuracy != null ? opts.accuracy : 0.5;
     const simp = opts.simplify != null ? opts.simplify : 0.4;
+    const cornerSharp = opts.cornerSharp != null ? opts.cornerSharp : 0;   // 0..1 crisper corners
+    const closeLoops = opts.closeLoops !== false;                          // snap near-closed loops shut
     const epsScale = 0.4 + simp * 3.0;              // 0.4 → ~3.4×
     const tension = (1 - accuracy) * 0.95;          // accurate → ~0 (crisp), smooth → ~0.95
     const maxExt = Math.round(2 + (1 - accuracy) * 4); // extend endpoints a touch more when smoothing
+    // A knife/crease loop with a tiny seam gap leaves an uncut tab — snap endpoints
+    // within ~a stroke-width of each other and emit one closed contour instead.
+    const loopTol = Math.max(4, Math.min(skel.w, skel.h) / 180);
     for (const col of skel.colors) {
         const paths = [];
         for (const poly of col.rawPolys) {
             let s = simplify(poly, epsScale);
             if (s.length < 2) continue;
-            // recover retracted / hooked endpoints against this colour's ink mask
-            if (s.length >= 2 && col.mask) {
+            const endGap = Math.hypot(s[0].x - s[s.length - 1].x, s[0].y - s[s.length - 1].y);
+            const closed = closeLoops && s.length >= 4 && endGap < loopTol;
+            if (closed) {
+                if (endGap > 1e-3) s[s.length - 1] = { x: s[0].x, y: s[0].y };
+                s = s.slice(0, -1);                 // drop duplicate; toPathD wraps + 'Z'
+            } else if (s.length >= 2 && col.mask) {
+                // open stroke: recover retracted / hooked endpoints against the ink mask
                 s[0] = extendEnd(s[0], s[1], col.mask, skel.w, skel.h, maxExt);
                 s[s.length - 1] = extendEnd(s[s.length - 1], s[s.length - 2], col.mask, skel.w, skel.h, maxExt);
             }
-            paths.push(toPathD(s, tension));
+            paths.push(toPathD(s, tension, cornerSharp, closed));
         }
         col.paths = paths;
     }
