@@ -37,7 +37,7 @@ import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
 import { CanvasEditor } from './CanvasEditor.js?v=12';
-import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG } from './DrawingVectorizer.js?v=19';
+import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG } from './DrawingVectorizer.js?v=20';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -1899,7 +1899,7 @@ function bindCropPointer() {
         const q = _localXY(e);
         const pim = screenToImg(q);
         const factor = Math.exp(-e.deltaY * 0.0015);
-        cropView.z = Math.max(1, Math.min(8, cropView.z * factor));
+        cropView.z = Math.max(0.35, Math.min(16, cropView.z * factor));
         const s = _vs();
         cropView.ox = q.x - pim.x * s; cropView.oy = q.y - pim.y * s;
         clampCropPan(); drawCropOverlay();
@@ -2129,8 +2129,9 @@ function detectColours(cb) {
                     accuracy: p.accuracy ?? 0.5, simplify: p.simplify ?? 0.4,
                     cornerSharp: p.cornerSharp ?? 0.4, closeLoops: p.closeLoops ?? true,
                     hueTolDeg: p.hueTolDeg ?? 18,
-                    minLen: p.minLen ?? 2,
-                    skeletonize: p.skeletonize ?? true,
+                    minLen: p.minLen ?? 2, bridgeGap: p.bridgeGap ?? 14,
+                    skeletonize: p.skeletonize ?? true, addFrame: p.addFrame ?? false,
+                    preset: p.preset ?? 'moderate',
                     overlay: p.overlay ?? true, hidden: {}, selected: null,
                     skel: null, eyedrop: false, view: null,
                 };
@@ -2156,7 +2157,7 @@ function pathLenPx(d) { try { _lenSvgPath.setAttribute('d', d); return _lenSvgPa
 // Refine paths from the current settings, then drop noise strokes below minLen.
 function recompute() {
     const w = _wiz; if (!w || !w.skel) return;
-    refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify, cornerSharp: w.cornerSharp, closeLoops: w.closeLoops, outline: !w.skeletonize });
+    refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify, cornerSharp: w.cornerSharp, closeLoops: w.closeLoops, outline: !w.skeletonize, bridgeGap: w.bridgeGap });
     const minLen = w.minLen || 0;   // 0 = noise filter off
     if (minLen > 0) {
         for (const col of w.skel.colors) {
@@ -2229,9 +2230,10 @@ function renderReview() {
             const mergeBtn = i > 0
                 ? `<button class="vc-mergeup${similar ? ' rec' : ''}" data-idx="${i}" title="Merge this colour into the one above${similar ? ' (looks similar)' : ''}">⇧ merge</button>`
                 : '';
+            const nPaths = (col.paths || []).length;
             return `<div class="vc-crow${sel}" draggable="true" data-idx="${i}">
                 <span class="vc-dot" style="background:rgb(${col.rgb.join(',')})"></span>
-                <span class="vc-cname">${col.name}</span>
+                <span class="vc-cname">${col.name} <small class="vc-pathcount">· ${nPaths} path${nPaths === 1 ? '' : 's'}</small></span>
                 <span class="vc-chex">${rgbHex(col.rgb)}</span>
                 ${mergeBtn}
                 <button class="vc-roweye${off}" data-idx="${i}" title="Hidden colours are not added to the canvas">👁</button>
@@ -2281,6 +2283,9 @@ function renderReview() {
     setVal('vcMinLen', w.minLen); setTxt('vcMinLenVal', w.minLen > 0 ? w.minLen + ' px' : 'Off');
     setVal('vcCorner', Math.round(w.cornerSharp * 100)); setTxt('vcCornerVal', Math.round(w.cornerSharp * 100) + '%');
     setVal('vcHueTol', w.hueTolDeg); setTxt('vcHueTolVal', w.hueTolDeg + '°');
+    setVal('vcBridge', w.bridgeGap); setTxt('vcBridgeVal', w.bridgeGap > 0 ? w.bridgeGap + ' px' : 'Off');
+    document.querySelectorAll('.vc-preset').forEach(b => b.classList.toggle('active', b.dataset.preset === w.preset));
+    const fr = document.getElementById('vcAddFrame'); if (fr) fr.checked = !!w.addFrame;
     // Skeletonize toggle + dependent settings: outlines are always closed loops
     const sk = document.getElementById('vcSkeletonize'); if (sk) sk.checked = !!w.skeletonize;
     const hint = document.getElementById('vcSkelHint');
@@ -2351,7 +2356,7 @@ function attachPreviewControls(cv, opts = {}) {
         const mx = (ev.clientX - r.left) * dpr, my = (ev.clientY - r.top) * dpr;
         const f = cv._fit; if (!f) return;
         const ix = (mx - f.ox) / f.scale, iy = (my - f.oy) / f.scale;   // image point under cursor
-        const nz = Math.max(1, Math.min(12, _wiz.view.z * (ev.deltaY < 0 ? 1.15 : 1 / 1.15)));
+        const nz = Math.max(0.3, Math.min(16, _wiz.view.z * (ev.deltaY < 0 ? 1.15 : 1 / 1.15)));
         _wiz.view.z = nz;
         // keep cursor over the same image point: recompute center so (ix,iy) stays put
         const fit = f.scale / (_wiz.view._prevZ || _wiz.view.z);
@@ -2398,7 +2403,7 @@ function wizInsert() {
     // hidden (eye off) colours → skipped entirely.
     const assignments = {};
     w.skel.colors.forEach((col, i) => { assignments[i] = w.hidden[i] ? 'ignore' : 'draw'; });
-    canvasEditor.importSVG(buildSVG(w.skel, assignments));
+    canvasEditor.importSVG(buildSVG(w.skel, assignments, { frame: w.addFrame }));
     if (_extractFlat) {
         const bedW = canvasEditor.view?.bedW || 960, bedH = canvasEditor.view?.bedH || 770;
         const { out, paperW, paperH } = _extractFlat;
@@ -2412,7 +2417,7 @@ function wizInsert() {
         ref.src = out.toDataURL('image/png');
     }
     const n = Object.values(assignments).filter(v => v && v !== 'ignore').length;
-    log(`Inserted ${n} colour layer${n === 1 ? '' : 's'} to canvas.`, 'success');
+    log(`Inserted ${n} colour layer${n === 1 ? '' : 's'}${w.addFrame ? ' + frame' : ''} to canvas.`, 'success');
     if (window.switchTab) window.switchTab('draw');
     closeVisionModal();
 }
@@ -2467,7 +2472,7 @@ document.getElementById('vcModeOverlay')?.addEventListener('click', () => setOve
 document.getElementById('vcModeVector')?.addEventListener('click', () => setOverlayMode(false));
 function zoomPreview(f) {
     if (!_wiz || !_wiz.view) return;
-    _wiz.view.z = Math.max(1, Math.min(12, _wiz.view.z * f)); drawWizPreview();
+    _wiz.view.z = Math.max(0.3, Math.min(16, _wiz.view.z * f)); drawWizPreview();
 }
 document.getElementById('vcZoomIn')?.addEventListener('click', () => zoomPreview(1.25));
 document.getElementById('vcZoomOut')?.addEventListener('click', () => zoomPreview(1 / 1.25));
@@ -2484,12 +2489,14 @@ document.getElementById('vcSettingsToggle')?.addEventListener('click', (e) => {
 });
 
 const _liveRefine = () => { recompute(); drawWizPreview(); };
+// Manually nudging a curve slider makes the active preset no longer accurate.
+const _clearPreset = () => { if (_wiz) _wiz.preset = 'custom'; document.querySelectorAll('.vc-preset').forEach(b => b.classList.remove('active')); };
 document.getElementById('wizAcc')?.addEventListener('input', (e) => {
-    if (!_wiz) return; _wiz.accuracy = e.target.value / 100;
+    if (!_wiz) return; _wiz.accuracy = e.target.value / 100; _clearPreset();
     document.getElementById('vcAccVal').textContent = e.target.value + '%'; _liveRefine();
 });
 document.getElementById('wizSimp')?.addEventListener('input', (e) => {
-    if (!_wiz) return; _wiz.simplify = e.target.value / 100;
+    if (!_wiz) return; _wiz.simplify = e.target.value / 100; _clearPreset();
     document.getElementById('vcSimpVal').textContent = e.target.value + '%'; _liveRefine();
 });
 document.getElementById('vcMinLen')?.addEventListener('input', (e) => {
@@ -2498,19 +2505,22 @@ document.getElementById('vcMinLen')?.addEventListener('input', (e) => {
 });
 document.getElementById('vcMinLen')?.addEventListener('change', _liveRefine);
 document.getElementById('vcCorner')?.addEventListener('input', (e) => {
-    if (!_wiz) return; _wiz.cornerSharp = e.target.value / 100;
+    if (!_wiz) return; _wiz.cornerSharp = e.target.value / 100; _clearPreset();
     document.getElementById('vcCornerVal').textContent = e.target.value + '%'; _liveRefine();
 });
 document.getElementById('vcCloseLoops')?.addEventListener('change', (e) => {
     if (!_wiz) return; _wiz.closeLoops = e.target.checked; _liveRefine();
 });
+// Colour separation only takes effect on Recalculate (heavy re-cluster) — sliding
+// alone just flags the button so repeated drags don't churn the whole analysis.
 document.getElementById('vcHueTol')?.addEventListener('input', (e) => {
     if (!_wiz) return; _wiz.hueTolDeg = +e.target.value;
     document.getElementById('vcHueTolVal').textContent = e.target.value + '°';
+    document.getElementById('vcRecalc')?.classList.add('pending');
 });
-// Re-clustering is the heavy pass — run it on release, not every input tick.
-document.getElementById('vcHueTol')?.addEventListener('change', () => {
-    if (!_wiz) return; reanalyzeWiz(); renderReview();
+document.getElementById('vcRecalc')?.addEventListener('click', (e) => {
+    if (!_wiz) return; e.currentTarget.classList.remove('pending');
+    reanalyzeWiz(); renderReview();
 });
 // Skeletonize toggle: ON = centerline of each pen stroke (default); OFF = trace
 // the outlines of solid/filled shapes instead. Light pass — instant switch.
@@ -2518,6 +2528,25 @@ document.getElementById('vcSkeletonize')?.addEventListener('change', (e) => {
     if (!_wiz) return; _wiz.skeletonize = e.target.checked;
     recompute(); renderReview();
 });
+document.getElementById('vcAddFrame')?.addEventListener('change', (e) => {
+    if (!_wiz) return; _wiz.addFrame = e.target.checked;   // applied at insert time
+});
+document.getElementById('vcBridge')?.addEventListener('input', (e) => {
+    if (!_wiz) return; _wiz.bridgeGap = +e.target.value;
+    document.getElementById('vcBridgeVal').textContent = _wiz.bridgeGap > 0 ? _wiz.bridgeGap + ' px' : 'Off';
+    _liveRefine();
+});
+// Quality presets → Detail / Simplify / Corner sharpness in one click.
+const _PRESETS = {
+    accurate: { accuracy: 0.9,  simplify: 0.12, cornerSharp: 0.75 },
+    moderate: { accuracy: 0.5,  simplify: 0.4,  cornerSharp: 0.4  },
+    smooth:   { accuracy: 0.2,  simplify: 0.62, cornerSharp: 0.15 },
+};
+document.querySelectorAll('.vc-preset').forEach(btn => btn.addEventListener('click', () => {
+    if (!_wiz) return; const p = _PRESETS[btn.dataset.preset]; if (!p) return;
+    Object.assign(_wiz, p, { preset: btn.dataset.preset });
+    recompute(); renderReview();
+}));
 
 // Upload a saved image straight from the PC (same detect → crop → flatten flow)
 document.getElementById('btnVisionUpload')?.addEventListener('click', () => {

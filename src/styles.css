@@ -3009,6 +3009,15 @@ body .btn-action { /* Specificity override */
 /* machine RECOMMENDS this merge (similar to the row above) — user still decides */
 .vc-mergeup.rec { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
 .vc-list-hint { margin-top: 0.5rem; font-size: 0.68rem; color: var(--text-muted); line-height: 1.4; }
+.vc-pathcount { color: var(--text-muted); font-weight: 500; font-size: 0.68rem; }
+.vc-sep-row { display: flex; align-items: flex-end; gap: 0.6rem; margin-top: 0.75rem; padding-top: 0.7rem; border-top: 1px solid var(--border); }
+.vc-recalc { flex: 0 0 auto; padding: 0.45rem 0.7rem; font-size: 0.74rem; white-space: nowrap; }
+.vc-recalc.pending { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); animation: vc-pulse 1.2s ease-in-out infinite; }
+@keyframes vc-pulse { 50% { opacity: 0.6; } }
+.vc-preset-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+.vc-preset-btns { display: inline-flex; background: #eef2f7; border-radius: 9px; padding: 3px; gap: 2px; }
+.vc-preset { border: none; background: transparent; padding: 0.35rem 0.7rem; border-radius: 7px; font-size: 0.74rem; font-weight: 600; color: var(--text-muted); cursor: pointer; }
+.vc-preset.active { background: #fff; color: var(--accent); box-shadow: 0 1px 3px rgba(15,23,42,0.12); }
 .vc-mode-hint { font-weight: 500; color: var(--text-muted); margin-left: 0.4rem; font-size: 0.72rem; }
 .vc-paper-row { display: flex; align-items: center; gap: 0.8rem; flex: 0 0 auto; }
 .vc-crow .vc-cname { font-size: 0.82rem; }

@@ -426,14 +426,57 @@ export function analyzeSkeletons(sourceCanvas, paperW, paperH, opts = {}) {
     return { w, h, paperW, paperH, bgRgb, colors };
 }
 
+// Unit tangent pointing along a→b.
+function _tan(a, b) { const dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy) || 1; return { x: dx / l, y: dy / l }; }
+// Greedily rejoin polyline ends that are close AND collinear — reconnects a
+// stroke that skeletonized into pieces because another colour crossed over it.
+// Sharp real corners (low collinearity) are left alone. maxGap in working px.
+function bridgePolylines(polys, maxGap, minCos) {
+    let segs = polys.filter(p => p.length >= 2).map(p => p.slice());
+    const outDir = (seg, atEnd) => atEnd ? _tan(seg[seg.length - 2], seg[seg.length - 1]) : _tan(seg[1], seg[0]);
+    let changed = true;
+    while (changed && segs.length > 1) {
+        changed = false;
+        let best = null;
+        for (let i = 0; i < segs.length; i++) for (let ei = 0; ei < 2; ei++) {
+            const Ae = ei ? segs[i][segs[i].length - 1] : segs[i][0];
+            const Ad = outDir(segs[i], !!ei);
+            for (let j = i + 1; j < segs.length; j++) for (let ej = 0; ej < 2; ej++) {
+                const Be = ej ? segs[j][segs[j].length - 1] : segs[j][0];
+                const gap = Math.hypot(Ae.x - Be.x, Ae.y - Be.y);
+                if (gap > maxGap) continue;
+                const Bd = outDir(segs[j], !!ej);
+                const cos = -(Ad.x * Bd.x + Ad.y * Bd.y);              // 1 = collinear continuation
+                let gx = Be.x - Ae.x, gy = Be.y - Ae.y; const gl = Math.hypot(gx, gy) || 1; gx /= gl; gy /= gl;
+                const align = gx * Ad.x + gy * Ad.y;                   // gap points along A's exit
+                if (cos > minCos && align > 0.3) {
+                    const score = cos + align - gap / (maxGap * 4);
+                    if (!best || score > best.score) best = { i, ei, j, ej, score };
+                }
+            }
+        }
+        if (!best) break;
+        let A = segs[best.i], B = segs[best.j];
+        if (!best.ei) A = A.slice().reverse();       // extend from A's tail
+        if (best.ej) B = B.slice().reverse();        // B starts at the joining end
+        const joined = A.concat(B);
+        const hi = Math.max(best.i, best.j), lo = Math.min(best.i, best.j);
+        segs.splice(hi, 1); segs.splice(lo, 1); segs.push(joined);
+        changed = true;
+    }
+    return segs;
+}
+
 // ── Cheap pass: turn raw skeleton polylines into refined path strings.
 // accuracy (0..1): Accurate↔Smooth (high = follow closely, less rounding).
 // simplify (0..1): point reduction (high = fewer points / coarser).
+// bridgeGap (px): reconnect crossings-broken strokes within this distance.
 export function refinePaths(skel, opts = {}) {
     const accuracy = opts.accuracy != null ? opts.accuracy : 0.5;
     const simp = opts.simplify != null ? opts.simplify : 0.4;
     const cornerSharp = opts.cornerSharp != null ? opts.cornerSharp : 0;   // 0..1 crisper corners
     const outline = !!opts.outline;                 // skeletonize OFF → contour loops
+    const bridge = opts.bridgeGap != null ? opts.bridgeGap : 0;            // px; 0 = off
     const closeLoops = outline || opts.closeLoops !== false;               // outlines are always loops
     const epsScale = 0.4 + simp * 3.0;              // 0.4 → ~3.4×
     const tension = (1 - accuracy) * 0.95;          // accurate → ~0 (crisp), smooth → ~0.95
@@ -442,10 +485,15 @@ export function refinePaths(skel, opts = {}) {
     // within ~a stroke-width of each other and emit one closed contour instead.
     const loopTol = outline ? Math.max(8, Math.min(skel.w, skel.h) / 90) : Math.max(4, Math.min(skel.w, skel.h) / 180);
     for (const col of skel.colors) {
-        const paths = [];
+        let segs = [];
         for (const poly of (outline ? (col.outlinePolys || []) : col.rawPolys)) {
-            let s = simplify(poly, epsScale);
-            if (s.length < 2) continue;
+            const s = simplify(poly, epsScale);
+            if (s.length >= 2) segs.push(s);
+        }
+        // Reconnect crossing-broken strokes (centerline mode only; outlines are loops)
+        if (bridge > 0 && !outline) segs = bridgePolylines(segs, bridge, 0.55);
+        const paths = [];
+        for (let s of segs) {
             const endGap = Math.hypot(s[0].x - s[s.length - 1].x, s[0].y - s[s.length - 1].y);
             const closed = closeLoops && s.length >= 4 && endGap < loopTol;
             if (closed) {
@@ -470,7 +518,7 @@ export function analyzeDrawing(sourceCanvas, paperW, paperH, opts = {}) {
 
 // Build an SVG from color→method assignments. `assignments` maps color index
 // (into result.colors) → method ('thru_cut'|'off_base'|'crease'|'draw'|'ignore').
-export function buildSVG(result, assignments) {
+export function buildSVG(result, assignments, opts = {}) {
     const { w, h, paperW, paperH, colors } = result;
     let body = '';
     colors.forEach((col, i) => {
@@ -484,5 +532,9 @@ export function buildSVG(result, assignments) {
         const dm = method === 'draw' ? 'thru_cut' : method;
         body += `  <path d="${col.paths.join(' ')}" fill="none" stroke="rgb(${r},${g},${b})" stroke-width="0.5" vector-effect="non-scaling-stroke" data-method="${dm}" data-op="${method}"/>\n`;
     });
+    // Optional page-outline reference frame, emitted as its own black layer.
+    if (opts.frame) {
+        body += `  <path d="M0,0 H${w} V${h} H0 Z" fill="none" stroke="rgb(20,20,20)" stroke-width="0.6" vector-effect="non-scaling-stroke" data-method="thru_cut" data-op="frame" data-name="Frame"/>\n`;
+    }
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${paperW}mm" height="${paperH}mm">\n${body}</svg>`;
 }
