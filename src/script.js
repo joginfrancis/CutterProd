@@ -2160,7 +2160,7 @@ function detectColours(cb) {
                     skeletonize: p.skeletonize ?? true, addFrame: p.addFrame ?? false,
                     preset: p.preset ?? 'moderate',
                     overlay: p.overlay ?? true, hidden: {}, selected: null,
-                    region: null, selMode: 'rect',   // window-select active by default
+                    region: null, selMode: 'none',   // pan by default; click a tool to select
                     skel: null, eyedrop: false, view: null,
                 };
                 reanalyzeWiz();
@@ -2479,7 +2479,7 @@ function attachPreviewControls(cv, opts = {}) {
                 const cx = d.type === 'rect' ? d.x0 : d.pts[0][0], cy = d.type === 'rect' ? d.y0 : d.pts[0][1];
                 if (!_pointInRegion(cx, cy, _wiz.region)) _wiz.region = null;
             }
-            setSelMode(_wiz.selMode);        // stay in the tool (sticky); refresh clear-btn state
+            setSelMode('none');              // return to pan after a selection/click
             recompute(); renderReview();
             return;
         }
