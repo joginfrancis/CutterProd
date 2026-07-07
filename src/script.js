@@ -2102,6 +2102,17 @@ function previewCursor() {
     if (_wiz.selMode === 'rect' || _wiz.selMode === 'lasso') return 'crosshair';
     return _wiz.eyedrop ? 'crosshair' : 'grab';
 }
+// Point-in-region test (mirrors the engine) for click-outside-to-deselect.
+function _pointInRegion(x, y, region) {
+    if (!region) return false;
+    if (region.type === 'rect') return x >= region.x0 && x <= region.x1 && y >= region.y0 && y <= region.y1;
+    const pts = region.pts; let inside = false;
+    for (let a = 0, b = pts.length - 1; a < pts.length; b = a++) {
+        const xi = pts[a][0], yi = pts[a][1], xj = pts[b][0], yj = pts[b][1];
+        if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+}
 // Toggle the region-select tool; 'none' just deactivates (selection stays).
 function setSelMode(m) {
     if (!_wiz) return;
@@ -2149,7 +2160,7 @@ function detectColours(cb) {
                     skeletonize: p.skeletonize ?? true, addFrame: p.addFrame ?? false,
                     preset: p.preset ?? 'moderate',
                     overlay: p.overlay ?? true, hidden: {}, selected: null,
-                    region: null, selMode: 'none',
+                    region: null, selMode: 'rect',   // window-select active by default
                     skel: null, eyedrop: false, view: null,
                 };
                 reanalyzeWiz();
@@ -2329,7 +2340,7 @@ function renderReview() {
     if (cl) { cl.checked = w.skeletonize ? !!w.closeLoops : true; cl.disabled = !w.skeletonize; }
     document.querySelectorAll('#vcModeOverlay,#vcModeVector').forEach(b => b.classList.remove('active'));
     document.getElementById(w.overlay ? 'vcModeOverlay' : 'vcModeVector')?.classList.add('active');
-    const clr = document.getElementById('vcSelClear'); if (clr) clr.disabled = !w.region;
+    setSelMode(w.selMode || 'none');   // reflect the active select tool + clear-btn state
 
     drawWizPreview();
 }
@@ -2421,9 +2432,10 @@ function attachPreviewControls(cv, opts = {}) {
         const px = (ev.clientX - r.left) * dpr, py = (ev.clientY - r.top) * dpr;
         return { x: (px - cv._fit.ox) / cv._fit.scale, y: (py - cv._fit.oy) / cv._fit.scale };
     };
-    let pan = null;
+    let pan = null, downAt = null;
     cv.onpointerdown = (ev) => {
         if (opts.eyedrop && _wiz.eyedrop) return; // let click handle sampling
+        downAt = { sx: ev.clientX, sy: ev.clientY };
         // Region-select mode → draw a window/lasso instead of panning
         if (_wiz.selMode === 'rect' || _wiz.selMode === 'lasso') {
             if (!cv._fit) return;
@@ -2450,19 +2462,32 @@ function attachPreviewControls(cv, opts = {}) {
         _wiz.view.cy = pan.cy - (ev.clientY - pan.y) * dpr / cv._fit.scale;
         drawWizPreview();
     };
-    cv.onpointerup = cv.onpointercancel = () => {
+    cv.onpointerup = cv.onpointercancel = (ev) => {
+        const moved = downAt ? Math.hypot(ev.clientX - downAt.sx, ev.clientY - downAt.sy) : 99;
         if (_selDrawing) {
             _selDrawing = false;
             const d = _selDraft; _selDraft = null;
+            let made = false;
             if (d && d.type === 'rect') {
                 const x0 = Math.min(d.x0, d.x1), x1 = Math.max(d.x0, d.x1), y0 = Math.min(d.y0, d.y1), y1 = Math.max(d.y0, d.y1);
-                if (x1 - x0 > 3 && y1 - y0 > 3) _wiz.region = { type: 'rect', x0, y0, x1, y1 };
-            } else if (d && d.type === 'lasso' && d.pts.length >= 3) {
-                _wiz.region = { type: 'lasso', pts: d.pts };
+                if (x1 - x0 > 4 && y1 - y0 > 4) { _wiz.region = { type: 'rect', x0, y0, x1, y1 }; made = true; }
+            } else if (d && d.type === 'lasso' && d.pts.length >= 4 && moved > 6) {
+                _wiz.region = { type: 'lasso', pts: d.pts }; made = true;
             }
-            setSelMode('none');
+            // A click (no real drag) inside the tool → deselect if it lands outside the region
+            if (!made && d && _wiz.region) {
+                const cx = d.type === 'rect' ? d.x0 : d.pts[0][0], cy = d.type === 'rect' ? d.y0 : d.pts[0][1];
+                if (!_pointInRegion(cx, cy, _wiz.region)) _wiz.region = null;
+            }
+            setSelMode(_wiz.selMode);        // stay in the tool (sticky); refresh clear-btn state
             recompute(); renderReview();
             return;
+        }
+        // Pan mode: a plain click outside the selection clears it (click-to-deselect)
+        if (pan && moved < 5 && _wiz.region && cv._fit) {
+            const p = { x: (( (downAt.sx - cv.getBoundingClientRect().left) * (cv.width / cv.getBoundingClientRect().width)) - cv._fit.ox) / cv._fit.scale,
+                        y: (( (downAt.sy - cv.getBoundingClientRect().top) * (cv.width / cv.getBoundingClientRect().width)) - cv._fit.oy) / cv._fit.scale };
+            if (!_pointInRegion(p.x, p.y, _wiz.region)) { _wiz.region = null; recompute(); renderReview(); }
         }
         pan = null; cv.style.cursor = previewCursor();
     };
@@ -2577,7 +2602,7 @@ document.getElementById('vcSelLasso')?.addEventListener('click', () => {
     if (!_wiz) return; setSelMode(_wiz.selMode === 'lasso' ? 'none' : 'lasso');
 });
 document.getElementById('vcSelClear')?.addEventListener('click', () => {
-    if (!_wiz) return; _wiz.region = null; setSelMode('none');
+    if (!_wiz) return; _wiz.region = null;   // keep the current tool active
     recompute(); renderReview();
 });
 document.getElementById('vcSettingsToggle')?.addEventListener('click', (e) => {

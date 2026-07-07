@@ -732,15 +732,21 @@
                             <div class="vc-tool-right vc-preview-tools">
                                 <!-- Region select: vectorise only inside a window or lasso (issue 10) -->
                                 <div class="vc-selctl" title="Vectorise only a selected area">
-                                    <button id="vcSelRect" title="Select a rectangular area">▭</button>
-                                    <button id="vcSelLasso" title="Lasso-select an area">◌</button>
-                                    <button id="vcSelClear" class="vc-sel-clear" title="Clear area selection" disabled>✕</button>
+                                    <button id="vcSelRect" title="Window select — drag a box (default). Click outside to clear.">
+                                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="4.5" width="17" height="15" rx="2" stroke-dasharray="3.2 3"></rect></svg>
+                                    </button>
+                                    <button id="vcSelLasso" title="Lasso select — trace a freehand loop">
+                                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="10.5" rx="8.5" ry="6" stroke-dasharray="3.2 3"></ellipse><path d="M8 16c-.6.5-.9 1.3-.6 2.1.3.8.2 1.6-.6 2.1"></path></svg>
+                                    </button>
+                                    <button id="vcSelClear" class="vc-sel-clear" title="Clear area selection" disabled>
+                                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+                                    </button>
                                 </div>
                                 <div class="vc-zoomctl">
-                                    <button id="vcZoomOut" title="Zoom out">&minus;</button>
+                                    <button id="vcZoomOut" title="Zoom out"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"></path></svg></button>
                                     <span id="vcZoomPct">100%</span>
-                                    <button id="vcZoomIn" title="Zoom in">+</button>
-                                    <button id="vcZoomFit" class="vc-fit" title="Fit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"></path></svg></button>
+                                    <button id="vcZoomIn" title="Zoom in"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg></button>
+                                    <button id="vcZoomFit" class="vc-fit" title="Fit to view"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"></path></svg></button>
                                 </div>
                             </div>
                         </div>
@@ -838,7 +844,7 @@
     <!-- SCRIPTS -->
     <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="trace_skeleton.js"></script>
-    <script type="module" src="script.js?v=58"></script>
+    <script type="module" src="script.js?v=59"></script>
 
 </body>
 </html>
