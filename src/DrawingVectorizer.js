@@ -232,6 +232,29 @@ function _erode(mask, w, h, r) {
 // centerline per stroke instead of a doubled "ladder" along a thick band.
 function _closeMask(mask, w, h, r) { return _erode(_dilate(mask, w, h, r), w, h, r); }
 
+// Trace a binary mask → skeleton polylines (>=8 pts). Shared by centerline + outline.
+function _traceMask(m, w, h) {
+    const N = w * h;
+    const mc = document.createElement('canvas'); mc.width = w; mc.height = h;
+    const mx = mc.getContext('2d'); const md = mx.createImageData(w, h);
+    for (let i = 0; i < N; i++) { const on = m[i] ? 255 : 0; const j = i * 4; md.data[j] = on; md.data[j + 1] = on; md.data[j + 2] = on; md.data[j + 3] = 255; }
+    mx.putImageData(md, 0, 0);
+    return (window.TraceSkeleton.fromCanvas(mc).polylines || []).filter(p => p.length >= 8);
+}
+// Build both geometries for one colour mask: adaptive close → centerline polylines
+// (skeletonize) + a 1px boundary ring → outline polylines (solid-fill mode).
+function _buildColorGeom(mask, w, h) {
+    const N = w * h;
+    const halfW = _strokeHalfWidth(mask, w, h);
+    const closeR = Math.max(1, Math.min(10, Math.round(halfW * 0.8)));
+    const clean = _closeMask(mask, w, h, closeR);
+    const rawPolys = _traceMask(clean, w, h);
+    const er1 = _erode(clean, w, h, 1);
+    const ring = new Uint8Array(N);
+    for (let i = 0; i < N; i++) ring[i] = clean[i] && !er1[i] ? 1 : 0;
+    return { rawPolys, outlinePolys: _traceMask(ring, w, h), mask: clean };
+}
+
 // Stroke half-width estimate via a two-pass chamfer distance transform: the
 // 90th-percentile distance of ink pixels to the background ≈ half the pen's
 // drawn thickness. Drives an ADAPTIVE close radius — a thick marker needs a
@@ -393,34 +416,12 @@ export function analyzeSkeletons(sourceCanvas, paperW, paperH, opts = {}) {
 
         const mask = new Uint8Array(N);
         for (let i = 0; i < N; i++) if (assign[i] === c) mask[i] = 1;
-        // Close the band to fill hollow/streaky cores → single centerline on thinning.
-        // ADAPTIVE radius from this colour's measured stroke width: thick marker →
-        // big close (no doubled traces); fine pen/handwriting → tiny close (no blobbing).
-        const halfW = _strokeHalfWidth(mask, w, h);
-        const closeR = Math.max(1, Math.min(10, Math.round(halfW * 0.8)));
-        const clean = _closeMask(mask, w, h, closeR);
-
-        const traceMask = (m) => {
-            const mc = document.createElement('canvas'); mc.width = w; mc.height = h;
-            const mx = mc.getContext('2d'); const md = mx.createImageData(w, h);
-            for (let i = 0; i < N; i++) { const on = m[i] ? 255 : 0; const j = i * 4; md.data[j] = on; md.data[j + 1] = on; md.data[j + 2] = on; md.data[j + 3] = 255; }
-            mx.putImageData(md, 0, 0);
-            return (window.TraceSkeleton.fromCanvas(mc).polylines || []).filter(p => p.length >= 8);
-        };
-
-        // Centerline polylines (skeletonize ON — pen strokes traced down the middle)
-        const rawPolys = traceMask(clean);
-        if (!rawPolys.length) continue;
-
-        // Outline polylines (skeletonize OFF — solid fills traced around the edge).
-        // The 1px boundary ring (mask − eroded mask) skeletonizes to exactly the
-        // contour loop, outer edges and holes alike.
-        const er1 = _erode(clean, w, h, 1);
-        const ring = new Uint8Array(N);
-        for (let i = 0; i < N; i++) ring[i] = clean[i] && !er1[i] ? 1 : 0;
-        const outlinePolys = traceMask(ring);
-
-        colors.push({ rgb, name: nearestName(rgbToLab(rgb[0], rgb[1], rgb[2])), count: counts[c], rawPolys, outlinePolys, mask: clean });
+        // Centerline + outline geometry (adaptive close scaled to this colour's
+        // measured stroke width: thick marker → big close so no doubled traces,
+        // fine handwriting → tiny close so letters don't blob together).
+        const geom = _buildColorGeom(mask, w, h);
+        if (!geom.rawPolys.length) continue;
+        colors.push({ rgb, name: nearestName(rgbToLab(rgb[0], rgb[1], rgb[2])), count: counts[c], ...geom });
     }
     colors.sort((a, b) => b.count - a.count);
     return { w, h, paperW, paperH, bgRgb, colors };
@@ -467,16 +468,77 @@ function bridgePolylines(polys, maxGap, minCos) {
     return segs;
 }
 
+// Region test in working-raster coordinates — rectangle or lasso polygon.
+function _ptInRegion(x, y, region) {
+    if (!region) return true;
+    if (region.type === 'rect') return x >= region.x0 && x <= region.x1 && y >= region.y0 && y <= region.y1;
+    const pts = region.pts; let inside = false;                 // even-odd ray cast
+    for (let a = 0, b = pts.length - 1; a < pts.length; b = a++) {
+        const xi = pts[a][0], yi = pts[a][1], xj = pts[b][0], yj = pts[b][1];
+        if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+}
+// Split a polyline into the runs of consecutive points that fall inside the region.
+function _clipPoly(poly, region) {
+    if (!region) return [poly];
+    const runs = []; let cur = [];
+    for (const pt of poly) {
+        if (_ptInRegion(pt[0], pt[1], region)) cur.push(pt);
+        else { if (cur.length >= 2) runs.push(cur); cur = []; }
+    }
+    if (cur.length >= 2) runs.push(cur);
+    return runs;
+}
+
+// ── Split one detected colour into two by re-clustering its own pixels ────────
+// The inverse of merge: k-means (k=2) over the colour's masked pixels in the
+// (already flattened) source, then rebuild geometry for each half. Replaces
+// colors[index] with the two new colours in place.
+export function splitColor(skel, index, sourceCanvas) {
+    const col = skel.colors[index]; if (!col || !col.mask) return skel;
+    const w = skel.w, h = skel.h, N = w * h;
+    const work = document.createElement('canvas'); work.width = w; work.height = h;
+    const wctx = work.getContext('2d', { willReadFrequently: true });
+    wctx.drawImage(sourceCanvas, 0, 0, w, h);
+    const data = wctx.getImageData(0, 0, w, h).data;
+
+    const idxs = [], labs = [];
+    for (let i = 0; i < N; i++) if (col.mask[i]) { const j = i * 4; idxs.push(i); labs.push(rgbToLab(data[j], data[j + 1], data[j + 2])); }
+    if (idxs.length < 40) return skel;                          // too small to split meaningfully
+    const cap = 8000, step = Math.max(1, Math.floor(labs.length / cap));
+    const sub = []; for (let s = 0; s < labs.length; s += step) sub.push(labs[s]);
+    const cents = kmeans(sub, 2);
+    if (cents.length < 2) return skel;
+
+    const m0 = new Uint8Array(N), m1 = new Uint8Array(N);
+    const acc = [[0, 0, 0, 0], [0, 0, 0, 0]];
+    for (let k = 0; k < idxs.length; k++) {
+        const c = deltaE(labs[k], cents[0]) <= deltaE(labs[k], cents[1]) ? 0 : 1;
+        const i = idxs[k]; (c ? m1 : m0)[i] = 1;
+        const j = i * 4, a = acc[c]; a[0] += data[j]; a[1] += data[j + 1]; a[2] += data[j + 2]; a[3]++;
+    }
+    if (!acc[0][3] || !acc[1][3]) return skel;                 // degenerate — all one side
+    const mk = (m, a) => {
+        const rgb = [Math.round(a[0] / a[3]), Math.round(a[1] / a[3]), Math.round(a[2] / a[3])];
+        return { rgb, name: nearestName(rgbToLab(rgb[0], rgb[1], rgb[2])), count: a[3], ..._buildColorGeom(m, w, h) };
+    };
+    skel.colors.splice(index, 1, mk(m0, acc[0]), mk(m1, acc[1]));
+    return skel;
+}
+
 // ── Cheap pass: turn raw skeleton polylines into refined path strings.
 // accuracy (0..1): Accurate↔Smooth (high = follow closely, less rounding).
 // simplify (0..1): point reduction (high = fewer points / coarser).
 // bridgeGap (px): reconnect crossings-broken strokes within this distance.
+// region: keep only path points inside this rect/lasso (working-raster coords).
 export function refinePaths(skel, opts = {}) {
     const accuracy = opts.accuracy != null ? opts.accuracy : 0.5;
     const simp = opts.simplify != null ? opts.simplify : 0.4;
     const cornerSharp = opts.cornerSharp != null ? opts.cornerSharp : 0;   // 0..1 crisper corners
     const outline = !!opts.outline;                 // skeletonize OFF → contour loops
     const bridge = opts.bridgeGap != null ? opts.bridgeGap : 0;            // px; 0 = off
+    const region = opts.region || null;                                    // keep-inside area
     const closeLoops = outline || opts.closeLoops !== false;               // outlines are always loops
     const epsScale = 0.4 + simp * 3.0;              // 0.4 → ~3.4×
     const tension = (1 - accuracy) * 0.95;          // accurate → ~0 (crisp), smooth → ~0.95
@@ -487,8 +549,10 @@ export function refinePaths(skel, opts = {}) {
     for (const col of skel.colors) {
         let segs = [];
         for (const poly of (outline ? (col.outlinePolys || []) : col.rawPolys)) {
-            const s = simplify(poly, epsScale);
-            if (s.length >= 2) segs.push(s);
+            for (const run of _clipPoly(poly, region)) {       // region = null → whole poly
+                const s = simplify(run, epsScale);
+                if (s.length >= 2) segs.push(s);
+            }
         }
         // Reconnect crossing-broken strokes (centerline mode only; outlines are loops)
         if (bridge > 0 && !outline) segs = bridgePolylines(segs, bridge, 0.55);

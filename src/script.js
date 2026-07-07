@@ -37,7 +37,7 @@ import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
 import { CanvasEditor } from './CanvasEditor.js?v=12';
-import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG } from './DrawingVectorizer.js?v=20';
+import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG, splitColor } from './DrawingVectorizer.js?v=21';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -2095,6 +2095,22 @@ function rgbDist(a, b) { const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b
 let _wiz = null;
 let _cropDirty = true;      // crop changed since last analysis → re-detect needed
 let _cropDetectTimer = null;
+let _selDrawing = false, _selDraft = null;   // region-select gesture state
+
+function previewCursor() {
+    if (!_wiz) return 'grab';
+    if (_wiz.selMode === 'rect' || _wiz.selMode === 'lasso') return 'crosshair';
+    return _wiz.eyedrop ? 'crosshair' : 'grab';
+}
+// Toggle the region-select tool; 'none' just deactivates (selection stays).
+function setSelMode(m) {
+    if (!_wiz) return;
+    _wiz.selMode = m;
+    document.getElementById('vcSelRect')?.classList.toggle('active', m === 'rect');
+    document.getElementById('vcSelLasso')?.classList.toggle('active', m === 'lasso');
+    const clr = document.getElementById('vcSelClear'); if (clr) clr.disabled = !_wiz.region;
+    const cv = document.getElementById('wizPreviewCanvas'); if (cv) cv.style.cursor = previewCursor();
+}
 
 // Switch the visible phase + update the numbered stepper.
 function setVisionPhase(n) {
@@ -2133,6 +2149,7 @@ function detectColours(cb) {
                     skeletonize: p.skeletonize ?? true, addFrame: p.addFrame ?? false,
                     preset: p.preset ?? 'moderate',
                     overlay: p.overlay ?? true, hidden: {}, selected: null,
+                    region: null, selMode: 'none',
                     skel: null, eyedrop: false, view: null,
                 };
                 reanalyzeWiz();
@@ -2157,7 +2174,7 @@ function pathLenPx(d) { try { _lenSvgPath.setAttribute('d', d); return _lenSvgPa
 // Refine paths from the current settings, then drop noise strokes below minLen.
 function recompute() {
     const w = _wiz; if (!w || !w.skel) return;
-    refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify, cornerSharp: w.cornerSharp, closeLoops: w.closeLoops, outline: !w.skeletonize, bridgeGap: w.bridgeGap });
+    refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify, cornerSharp: w.cornerSharp, closeLoops: w.closeLoops, outline: !w.skeletonize, bridgeGap: w.bridgeGap, region: w.region });
     const minLen = w.minLen || 0;   // 0 = noise filter off
     if (minLen > 0) {
         for (const col of w.skel.colors) {
@@ -2189,6 +2206,20 @@ function mergeIntoAbove(i) {
     if (C[j].mask && C[i].mask) { const m = C[j].mask, o = C[i].mask; for (let k = 0; k < m.length; k++) if (o[k]) m[k] = 1; }
     C[j].count = wa + wb; C.splice(i, 1);
     remapRowState(i, -1);
+    recompute(); renderReview();
+}
+
+// Split a colour row into two (re-cluster its pixels). One row → two, so indices
+// after it shift up by one — remap hidden/selected accordingly.
+function splitRow(i) {
+    const w = _wiz; if (!w || !w.skel || !_extractFlat) return;
+    const before = w.skel.colors.length;
+    splitColor(w.skel, i, _extractFlat.out);
+    if (w.skel.colors.length <= before) { log('Colour is too uniform to split.', 'warn'); return; }
+    const hid = {};
+    Object.keys(w.hidden).forEach(k => { const n = +k; hid[n > i ? n + 1 : n] = w.hidden[k]; });
+    w.hidden = hid;
+    if (w.selected != null && w.selected > i) w.selected++;
     recompute(); renderReview();
 }
 
@@ -2228,15 +2259,16 @@ function renderReview() {
             const sel = w.selected === i ? ' sel' : '';
             const similar = i > 0 && rgbDist(col.rgb, cols[i - 1].rgb) < 45;
             const mergeBtn = i > 0
-                ? `<button class="vc-mergeup${similar ? ' rec' : ''}" data-idx="${i}" title="Merge this colour into the one above${similar ? ' (looks similar)' : ''}">⇧ merge</button>`
-                : '';
+                ? `<button class="vc-iconbtn vc-mergeup${similar ? ' rec' : ''}" data-idx="${i}" title="Merge into the colour above${similar ? ' — looks similar' : ''}">⇧</button>`
+                : '<span class="vc-iconbtn-gap"></span>';
             const nPaths = (col.paths || []).length;
             return `<div class="vc-crow${sel}" draggable="true" data-idx="${i}">
                 <span class="vc-dot" style="background:rgb(${col.rgb.join(',')})"></span>
-                <span class="vc-cname">${col.name} <small class="vc-pathcount">· ${nPaths} path${nPaths === 1 ? '' : 's'}</small></span>
+                <span class="vc-cname">${col.name}<small class="vc-pathcount"> · ${nPaths} path${nPaths === 1 ? '' : 's'}</small></span>
                 <span class="vc-chex">${rgbHex(col.rgb)}</span>
                 ${mergeBtn}
-                <button class="vc-roweye${off}" data-idx="${i}" title="Hidden colours are not added to the canvas">👁</button>
+                <button class="vc-iconbtn vc-rowsplit" data-idx="${i}" title="Split this colour into two (re-cluster its pixels)">⤢</button>
+                <button class="vc-iconbtn vc-roweye${off}" data-idx="${i}" title="Hidden colours are not added to the canvas">👁</button>
             </div>`;
         }).join('');
 
@@ -2247,6 +2279,9 @@ function renderReview() {
     });
     list.querySelectorAll('.vc-mergeup').forEach(btn => btn.onclick = (e) => {
         e.stopPropagation(); mergeIntoAbove(+btn.dataset.idx);
+    });
+    list.querySelectorAll('.vc-rowsplit').forEach(btn => btn.onclick = (e) => {
+        e.stopPropagation(); splitRow(+btn.dataset.idx);
     });
     // click row → highlight that colour in the preview (click again to clear)
     list.querySelectorAll('.vc-crow').forEach(row => {
@@ -2294,6 +2329,7 @@ function renderReview() {
     if (cl) { cl.checked = w.skeletonize ? !!w.closeLoops : true; cl.disabled = !w.skeletonize; }
     document.querySelectorAll('#vcModeOverlay,#vcModeVector').forEach(b => b.classList.remove('active'));
     document.getElementById(w.overlay ? 'vcModeOverlay' : 'vcModeVector')?.classList.add('active');
+    const clr = document.getElementById('vcSelClear'); if (clr) clr.disabled = !w.region;
 
     drawWizPreview();
 }
@@ -2337,6 +2373,21 @@ function drawWizPreview() {
         ctx.globalAlpha = 1;
         ctx.restore();
     }
+    // Region-select overlay (active selection or in-progress draft)
+    const reg = _selDraft || _wiz.region;
+    if (reg) {
+        ctx.save(); ctx.translate(ox, oy); ctx.scale(s, s);
+        ctx.setLineDash([6 / s, 4 / s]); ctx.lineWidth = 1.6 / s; ctx.strokeStyle = '#3b82f6';
+        ctx.fillStyle = 'rgba(59,130,246,0.08)';
+        ctx.beginPath();
+        if (reg.type === 'rect') {
+            ctx.rect(Math.min(reg.x0, reg.x1), Math.min(reg.y0, reg.y1), Math.abs(reg.x1 - reg.x0), Math.abs(reg.y1 - reg.y0));
+        } else if (reg.pts) {
+            reg.pts.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+            if (!_selDrawing) ctx.closePath();
+        }
+        ctx.fill(); ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+    }
     const pct = document.getElementById('vcZoomPct'); if (pct) pct.textContent = Math.round(_wiz.view.z * 100) + '%';
 }
 
@@ -2364,21 +2415,58 @@ function attachPreviewControls(cv, opts = {}) {
         _wiz.view.cy = iy + (cv.height / 2 - my) / (fit * nz);
         drawWizPreview();
     };
+    // pointer→image-space (working raster) helper
+    const imgPt = (ev) => {
+        const r = cv.getBoundingClientRect(); const dpr = cv.width / r.width;
+        const px = (ev.clientX - r.left) * dpr, py = (ev.clientY - r.top) * dpr;
+        return { x: (px - cv._fit.ox) / cv._fit.scale, y: (py - cv._fit.oy) / cv._fit.scale };
+    };
     let pan = null;
     cv.onpointerdown = (ev) => {
         if (opts.eyedrop && _wiz.eyedrop) return; // let click handle sampling
+        // Region-select mode → draw a window/lasso instead of panning
+        if (_wiz.selMode === 'rect' || _wiz.selMode === 'lasso') {
+            if (!cv._fit) return;
+            const p = imgPt(ev);
+            _selDrawing = true;
+            _selDraft = _wiz.selMode === 'rect'
+                ? { type: 'rect', x0: p.x, y0: p.y, x1: p.x, y1: p.y }
+                : { type: 'lasso', pts: [[p.x, p.y]] };
+            cv.setPointerCapture(ev.pointerId); drawWizPreview(); return;
+        }
         pan = { x: ev.clientX, y: ev.clientY, cx: _wiz.view.cx, cy: _wiz.view.cy }; cv.setPointerCapture(ev.pointerId);
         cv.style.cursor = 'grabbing';
     };
     cv.onpointermove = (ev) => {
+        if (_selDrawing && _selDraft && cv._fit) {
+            const p = imgPt(ev);
+            if (_selDraft.type === 'rect') { _selDraft.x1 = p.x; _selDraft.y1 = p.y; }
+            else _selDraft.pts.push([p.x, p.y]);
+            drawWizPreview(); return;
+        }
         if (!pan || !cv._fit) return;
         const dpr = cv.width / cv.getBoundingClientRect().width;
         _wiz.view.cx = pan.cx - (ev.clientX - pan.x) * dpr / cv._fit.scale;
         _wiz.view.cy = pan.cy - (ev.clientY - pan.y) * dpr / cv._fit.scale;
         drawWizPreview();
     };
-    cv.onpointerup = cv.onpointercancel = () => { pan = null; cv.style.cursor = opts.eyedrop && _wiz.eyedrop ? 'crosshair' : 'grab'; };
-    cv.style.cursor = opts.eyedrop && _wiz.eyedrop ? 'crosshair' : 'grab';
+    cv.onpointerup = cv.onpointercancel = () => {
+        if (_selDrawing) {
+            _selDrawing = false;
+            const d = _selDraft; _selDraft = null;
+            if (d && d.type === 'rect') {
+                const x0 = Math.min(d.x0, d.x1), x1 = Math.max(d.x0, d.x1), y0 = Math.min(d.y0, d.y1), y1 = Math.max(d.y0, d.y1);
+                if (x1 - x0 > 3 && y1 - y0 > 3) _wiz.region = { type: 'rect', x0, y0, x1, y1 };
+            } else if (d && d.type === 'lasso' && d.pts.length >= 3) {
+                _wiz.region = { type: 'lasso', pts: d.pts };
+            }
+            setSelMode('none');
+            recompute(); renderReview();
+            return;
+        }
+        pan = null; cv.style.cursor = previewCursor();
+    };
+    cv.style.cursor = previewCursor();
     if (opts.eyedrop) {
         cv.onclick = (ev) => {
             if (!_wiz.eyedrop || !cv._fit) return;
@@ -2479,6 +2567,18 @@ document.getElementById('vcZoomOut')?.addEventListener('click', () => zoomPrevie
 document.getElementById('vcZoomFit')?.addEventListener('click', () => {
     if (!_wiz || !_wiz.skel) return;
     _wiz.view = { z: 1, cx: _wiz.skel.w / 2, cy: _wiz.skel.h / 2 }; drawWizPreview();
+});
+// Region select (issue 10): window / lasso / clear. Only paths inside the region
+// are vectorised + inserted; drawn on the preview in working-raster coordinates.
+document.getElementById('vcSelRect')?.addEventListener('click', () => {
+    if (!_wiz) return; setSelMode(_wiz.selMode === 'rect' ? 'none' : 'rect');
+});
+document.getElementById('vcSelLasso')?.addEventListener('click', () => {
+    if (!_wiz) return; setSelMode(_wiz.selMode === 'lasso' ? 'none' : 'lasso');
+});
+document.getElementById('vcSelClear')?.addEventListener('click', () => {
+    if (!_wiz) return; _wiz.region = null; setSelMode('none');
+    recompute(); renderReview();
 });
 document.getElementById('vcSettingsToggle')?.addEventListener('click', (e) => {
     const body = document.getElementById('vcSettingsBody');

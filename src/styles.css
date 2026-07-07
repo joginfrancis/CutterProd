@@ -2995,19 +2995,25 @@ body .btn-action { /* Specificity override */
 .vc-chip-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 .vc-colourlist { display: flex; flex-direction: column; }
-.vc-crow { display: flex; align-items: center; gap: 0.55rem; padding: 0.5rem 0.35rem; border-bottom: 1px solid var(--border); cursor: pointer; border-radius: 8px; transition: background 0.12s; }
+.vc-crow { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 0.35rem; border-bottom: 1px solid var(--border); cursor: pointer; border-radius: 8px; transition: background 0.12s; }
 .vc-crow:last-child { border-bottom: none; }
 .vc-crow:hover { background: #f8fafc; }
 .vc-crow.sel { background: var(--accent-glow); box-shadow: inset 2px 0 0 var(--accent); }
 .vc-crow[draggable="true"] { user-select: none; }
-.vc-mergeup {
-    padding: 0.2rem 0.5rem; border: 1px solid var(--border); border-radius: 999px;
-    background: #fff; color: var(--text-muted); font-size: 0.66rem; font-weight: 600;
-    cursor: pointer; white-space: nowrap; transition: color 0.15s, border-color 0.15s, background 0.15s;
+.vc-crow .vc-cname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vc-crow .vc-chex { flex: 0 0 auto; }
+/* compact square icon buttons so merge/split/eye fit the 300px column */
+.vc-iconbtn {
+    flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border: 1px solid transparent; border-radius: 7px;
+    background: transparent; color: var(--text-muted); font-size: 0.8rem; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
-.vc-mergeup:hover { border-color: var(--accent); color: var(--accent); }
+.vc-iconbtn:hover { border-color: var(--accent); color: var(--accent); }
+.vc-iconbtn-gap { flex: 0 0 auto; width: 24px; }
 /* machine RECOMMENDS this merge (similar to the row above) — user still decides */
 .vc-mergeup.rec { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
+.vc-roweye.off { opacity: 0.3; }
 .vc-list-hint { margin-top: 0.5rem; font-size: 0.68rem; color: var(--text-muted); line-height: 1.4; }
 .vc-pathcount { color: var(--text-muted); font-weight: 500; font-size: 0.68rem; }
 .vc-sep-row { display: flex; align-items: flex-end; gap: 0.6rem; margin-top: 0.75rem; padding-top: 0.7rem; border-top: 1px solid var(--border); }
@@ -3018,6 +3024,13 @@ body .btn-action { /* Specificity override */
 .vc-preset-btns { display: inline-flex; background: #eef2f7; border-radius: 9px; padding: 3px; gap: 2px; }
 .vc-preset { border: none; background: transparent; padding: 0.35rem 0.7rem; border-radius: 7px; font-size: 0.74rem; font-weight: 600; color: var(--text-muted); cursor: pointer; }
 .vc-preset.active { background: #fff; color: var(--accent); box-shadow: 0 1px 3px rgba(15,23,42,0.12); }
+.vc-tool-right { display: inline-flex; align-items: center; gap: 0.6rem; }
+.vc-selctl { display: inline-flex; background: #eef2f7; border-radius: 9px; padding: 3px; gap: 2px; }
+.vc-selctl button { width: 30px; height: 30px; border: none; background: transparent; border-radius: 7px; cursor: pointer; font-size: 0.95rem; color: var(--text-muted); display: inline-flex; align-items: center; justify-content: center; }
+.vc-selctl button:hover:not(:disabled) { color: var(--accent); }
+.vc-selctl button.active { background: #fff; color: var(--accent); box-shadow: 0 1px 3px rgba(15,23,42,0.12); }
+.vc-selctl button:disabled { opacity: 0.35; cursor: default; }
+.vc-sel-clear { font-size: 0.8rem !important; }
 .vc-mode-hint { font-weight: 500; color: var(--text-muted); margin-left: 0.4rem; font-size: 0.72rem; }
 .vc-paper-row { display: flex; align-items: center; gap: 0.8rem; flex: 0 0 auto; }
 .vc-crow .vc-cname { font-size: 0.82rem; }
