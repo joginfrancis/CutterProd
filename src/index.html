@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UrumiCutter V2 - Control Dashboard</title>
-    <link rel="stylesheet" href="styles.css?v=27">
+    <link rel="stylesheet" href="styles.css?v=28">
     <!-- Google Font for Outfit and Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -724,24 +724,25 @@
                             <button id="vcModeOverlay" class="active">Overlay</button>
                             <button id="vcModeVector">Vector only</button>
                         </div>
-                        <div class="vc-tool-right">
-                            <!-- Region select: vectorise only inside a window or lasso (issue 10) -->
-                            <div class="vc-selctl" title="Vectorise only a selected area">
-                                <button id="vcSelRect" title="Select a rectangular area">▭</button>
-                                <button id="vcSelLasso" title="Lasso-select an area">◌</button>
-                                <button id="vcSelClear" class="vc-sel-clear" title="Clear area selection" disabled>✕</button>
-                            </div>
-                            <div class="vc-zoomctl">
-                                <button id="vcZoomOut" title="Zoom out">&minus;</button>
-                                <span id="vcZoomPct">100%</span>
-                                <button id="vcZoomIn" title="Zoom in">+</button>
-                                <button id="vcZoomFit" class="vc-fit" title="Fit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"></path></svg></button>
-                            </div>
-                        </div>
                     </div>
                     <div class="vc-review-grid">
                         <div class="vc-preview-wrap">
                             <canvas id="wizPreviewCanvas" class="vc-preview"></canvas>
+                            <!-- Floating tool bar pinned to the bottom of the preview -->
+                            <div class="vc-tool-right vc-preview-tools">
+                                <!-- Region select: vectorise only inside a window or lasso (issue 10) -->
+                                <div class="vc-selctl" title="Vectorise only a selected area">
+                                    <button id="vcSelRect" title="Select a rectangular area">▭</button>
+                                    <button id="vcSelLasso" title="Lasso-select an area">◌</button>
+                                    <button id="vcSelClear" class="vc-sel-clear" title="Clear area selection" disabled>✕</button>
+                                </div>
+                                <div class="vc-zoomctl">
+                                    <button id="vcZoomOut" title="Zoom out">&minus;</button>
+                                    <span id="vcZoomPct">100%</span>
+                                    <button id="vcZoomIn" title="Zoom in">+</button>
+                                    <button id="vcZoomFit" class="vc-fit" title="Fit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"></path></svg></button>
+                                </div>
+                            </div>
                         </div>
                         <div class="vc-review-side">
                             <div class="vc-card">
