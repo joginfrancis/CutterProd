@@ -37,7 +37,7 @@ import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
 import { CanvasEditor } from './CanvasEditor.js?v=12';
-import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG } from './DrawingVectorizer.js?v=15';
+import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG } from './DrawingVectorizer.js?v=19';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -1762,8 +1762,6 @@ function showVisionPreview(img, detectedCorners) {
         pill.textContent = valid ? '✓ Page detected' : 'Drag each corner to a paper edge';
         pill.style.color = valid ? '#10b981' : '#60a5fa';
     }
-    // Populate the phase-2 "Detected colours" card without waiting for Continue
-    scheduleCropDetect();
 }
 
 // Fit the whole photo into the canvas box at z=1 and centre it (retries until laid out).
@@ -1833,7 +1831,7 @@ function _localXY(e) {
 }
 
 // Nearest corner handle within grab distance of a screen point, or -1.
-function _hitCorner(q, radius = 22) {
+function _hitCorner(q, radius = 32) {
     let nearest = -1, best = Infinity;
     cropCorners.forEach((c, i) => {
         const sp = imgToScreen(c);
@@ -1848,6 +1846,10 @@ function bindCropPointer() {
     if (cv._cropBound) return; cv._cropBound = true;
 
     const down = (e) => {
+        // A pending background re-detect would run the heavy analysis on the main
+        // thread mid-drag (corner appears stuck, then slips; hover loupe won't
+        // render) — cancel it; it reschedules on release.
+        clearTimeout(_cropDetectTimer);
         const q = _localXY(e);
         const hit = _hitCorner(q);
         if (hit >= 0) { _activeCorner = hit; }
@@ -1879,9 +1881,14 @@ function bindCropPointer() {
         _activeCorner = -1; _isPanning = false; _lastPan = null;
         cv.style.cursor = 'grab';
         document.getElementById('visionLoupe').style.display = 'none';
-        // Corner moved → the flatten/analysis is stale: re-detect so the colours
-        // card updates now AND "Continue" re-flattens with the corrected crop.
-        if (movedCorner) { _cropDirty = true; scheduleCropDetect(); }
+        // Corner moved → mark stale ONLY. No background re-analysis here: it runs
+        // on the main thread and would freeze the next drag / hover loupe.
+        // "Continue" re-flattens with the corrected crop (it checks _cropDirty).
+        if (movedCorner) {
+            _cropDirty = true;
+            const pill = document.getElementById('visionCropStatus');
+            if (pill) { pill.textContent = 'Crop adjusted — colours update on Continue'; pill.style.color = '#60a5fa'; }
+        }
     };
     const leave = () => {
         if (_activeCorner < 0 && !_isPanning) document.getElementById('visionLoupe').style.display = 'none';
@@ -2081,16 +2088,6 @@ function flattenCroppedPage() {
 // ── Extract Drawing: vectorize the flattened page, grouped by ink color ──────
 let _extractResult = null;
 let _extractFlat = null; // { out:<canvas>, paperW, paperH } — flattened page for reference underlay
-const OP_OPTIONS = [
-    { v: 'thru_cut', label: 'Cut' },
-    { v: 'crease',   label: 'Crease' },
-    { v: 'off_base', label: 'Off-base' },
-    { v: 'draw',     label: 'Draw' },
-    { v: 'ignore',   label: 'Ignore' },
-];
-// Remember the last operation chosen for a given color name (convenience default)
-const _lastOpForColor = {};
-
 function rgbHex(rgb) { return '#' + rgb.map(v => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('').toUpperCase(); }
 function rgbDist(a, b) { const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2]; return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db) / 3; }
 
@@ -2112,17 +2109,14 @@ function setVisionPhase(n) {
     if (n === 3) requestAnimationFrame(() => { ensurePreviewBound(); drawWizPreview(); });
 }
 
-// Debounced background detection so the phase-2 colours card fills in on its own.
-function scheduleCropDetect() {
-    clearTimeout(_cropDetectTimer);
-    _cropDetectTimer = setTimeout(() => { if (_cropDirty) detectColours(); }, 400);
-}
-
 // Heavy stage: flatten → substrate → skeletonise → refine (+ filters).
+// Runs ONLY on Continue — phase 2 stays light so corner dragging never stalls,
+// and colours are measured on the FLATTENED page (pre-flatten values are false).
 function detectColours(cb) {
     if (!canvasEditor) return;
     const pill = document.getElementById('visionCropStatus');
     try {
+        if (pill) { pill.textContent = 'Updating colours…'; pill.style.color = '#fbbf24'; }
         const res = flattenCroppedPage();
         if (!res) return;
         setTimeout(() => {
@@ -2135,15 +2129,15 @@ function detectColours(cb) {
                     accuracy: p.accuracy ?? 0.5, simplify: p.simplify ?? 0.4,
                     cornerSharp: p.cornerSharp ?? 0.4, closeLoops: p.closeLoops ?? true,
                     hueTolDeg: p.hueTolDeg ?? 18,
-                    denoise: p.denoise ?? true, minLen: p.minLen ?? 2, mergeTol: p.mergeTol ?? 40,
-                    overlay: p.overlay ?? true, hidden: {},
-                    skel: null, eyedrop: false, assignments: p.assignments || {}, view: null,
+                    minLen: p.minLen ?? 2,
+                    skeletonize: p.skeletonize ?? true,
+                    overlay: p.overlay ?? true, hidden: {}, selected: null,
+                    skel: null, eyedrop: false, view: null,
                 };
                 reanalyzeWiz();
                 _cropDirty = false;
-                renderCropColours();
                 renderReview();
-                if (pill && pill.textContent === 'Reading page…') pill.textContent = '✓ Page detected';
+                if (pill) { pill.textContent = '✓ Page detected'; pill.style.color = '#10b981'; }
                 if (cb) cb();
             } catch (err) {
                 console.error('detectColours:', err);
@@ -2162,8 +2156,8 @@ function pathLenPx(d) { try { _lenSvgPath.setAttribute('d', d); return _lenSvgPa
 // Refine paths from the current settings, then drop noise strokes below minLen.
 function recompute() {
     const w = _wiz; if (!w || !w.skel) return;
-    refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify, cornerSharp: w.cornerSharp, closeLoops: w.closeLoops });
-    const minLen = w.denoise ? Math.max(1, w.minLen || 0) : 0;
+    refinePaths(w.skel, { accuracy: w.accuracy, simplify: w.simplify, cornerSharp: w.cornerSharp, closeLoops: w.closeLoops, outline: !w.skeletonize });
+    const minLen = w.minLen || 0;   // 0 = noise filter off
     if (minLen > 0) {
         for (const col of w.skel.colors) {
             if (Array.isArray(col.paths)) col.paths = col.paths.filter(d => pathLenPx(d) >= minLen);
@@ -2180,41 +2174,36 @@ function reanalyzeWiz() {
     } catch (e) { console.error('analyzeSkeletons:', e); w.skel = null; }
 }
 
-// Merge every colour pair whose RGB distance is within the tolerance slider.
-function mergeSimilarColours() {
+// User-driven merge: fold colour row i into the row ABOVE it (i-1). The machine
+// only RECOMMENDS (the button lights up when the two look alike) — merging is
+// always the user's click.
+function mergeIntoAbove(i) {
     const w = _wiz; if (!w || !w.skel) return;
-    const tol = 8 + (w.mergeTol / 100) * 40;   // 8‥48 ΔE-ish
-    const C = w.skel.colors;
-    for (let i = C.length - 1; i >= 1; i--) {
-        for (let j = 0; j < i; j++) {
-            if (rgbDist(C[i].rgb, C[j].rgb) < tol) {
-                const wa = C[j].count || 1, wb = C[i].count || 1;
-                C[j].rgb = C[j].rgb.map((v, k) => Math.round((v * wa + C[i].rgb[k] * wb) / (wa + wb)));
-                C[j].rawPolys = (C[j].rawPolys || []).concat(C[i].rawPolys || []);
-                if (C[j].mask && C[i].mask) { const m = C[j].mask, o = C[i].mask; for (let k = 0; k < m.length; k++) if (o[k]) m[k] = 1; }
-                C[j].count = wa + wb; C.splice(i, 1); break;
-            }
-        }
-    }
-    recompute(); renderCropColours(); renderReview();
+    const C = w.skel.colors; if (i < 1 || !C[i] || !C[i - 1]) return;
+    const j = i - 1;
+    const wa = C[j].count || 1, wb = C[i].count || 1;
+    C[j].rgb = C[j].rgb.map((v, k) => Math.round((v * wa + C[i].rgb[k] * wb) / (wa + wb)));
+    C[j].rawPolys = (C[j].rawPolys || []).concat(C[i].rawPolys || []);
+    C[j].outlinePolys = (C[j].outlinePolys || []).concat(C[i].outlinePolys || []);
+    if (C[j].mask && C[i].mask) { const m = C[j].mask, o = C[i].mask; for (let k = 0; k < m.length; k++) if (o[k]) m[k] = 1; }
+    C[j].count = wa + wb; C.splice(i, 1);
+    remapRowState(i, -1);
+    recompute(); renderReview();
 }
 
-// ── Phase-2 read-only colour summary ─────────────────────────────────────────
-function renderCropColours() {
-    const w = _wiz;
-    const host = document.getElementById('vcCropColours'); if (!host) return;
-    const cols = (w && w.skel) ? w.skel.colors : [];
-    document.getElementById('vcCropColourCount').textContent = cols.length ? `(${cols.length})` : '';
-    host.innerHTML = cols.length
-        ? cols.map(c => `<div class="vc-crop-crow">
-              <span class="vc-dot" style="background:rgb(${c.rgb.join(',')})"></span>
-              <span class="vc-cname">${c.name}</span>
-              <span class="vc-chex">${rgbHex(c.rgb)}</span>
-           </div>`).join('')
-        : '<div class="vc-muted">No distinct ink detected yet.</div>';
-    if (w) {
-        document.getElementById('vcCropBgSwatch').style.background = `rgb(${w.bg.join(',')})`;
-        document.getElementById('vcCropBgHex').textContent = rgbHex(w.bg);
+// Keep hidden/selected keyed correctly when rows are removed or reordered.
+function remapRowState(removedAt, _dir) {
+    const w = _wiz; if (!w) return;
+    const hid = {};
+    Object.keys(w.hidden).forEach(k => {
+        const n = +k;
+        if (n === removedAt) return;
+        hid[n > removedAt ? n - 1 : n] = w.hidden[k];
+    });
+    w.hidden = hid;
+    if (w.selected != null) {
+        if (w.selected === removedAt) w.selected = null;
+        else if (w.selected > removedAt) w.selected--;
     }
 }
 
@@ -2225,26 +2214,63 @@ function renderReview() {
     document.getElementById('vcRevColourCount').textContent = cols.length ? `(${cols.length})` : '';
     const nextBtn = document.getElementById('wizNext'); if (nextBtn) nextBtn.disabled = !cols.length;
 
+    // No operation dropdown here: every VISIBLE colour is inserted (as Draw);
+    // hidden colours are skipped. Cut/Crease etc. are assigned later in Design.
+    // Rows: click = highlight in preview · drag = reorder · "⇧ merge" appears on
+    // every row below the first and LIGHTS UP when it resembles the row above
+    // (machine recommends, user decides).
     const list = document.getElementById('vcColourList');
     list.innerHTML = !cols.length
         ? '<div class="vc-muted">No distinct ink detected — go Back to re-crop or improve lighting.</div>'
         : cols.map((col, i) => {
-            const suggested = w.assignments[i] || _lastOpForColor[rgbHex(col.rgb)] || 'draw';
-            const opts = OP_OPTIONS.map(o => `<option value="${o.v}" ${o.v === suggested ? 'selected' : ''}>${o.label}</option>`).join('');
             const off = w.hidden[i] ? ' off' : '';
-            return `<div class="vc-crow">
+            const sel = w.selected === i ? ' sel' : '';
+            const similar = i > 0 && rgbDist(col.rgb, cols[i - 1].rgb) < 45;
+            const mergeBtn = i > 0
+                ? `<button class="vc-mergeup${similar ? ' rec' : ''}" data-idx="${i}" title="Merge this colour into the one above${similar ? ' (looks similar)' : ''}">⇧ merge</button>`
+                : '';
+            return `<div class="vc-crow${sel}" draggable="true" data-idx="${i}">
                 <span class="vc-dot" style="background:rgb(${col.rgb.join(',')})"></span>
                 <span class="vc-cname">${col.name}</span>
                 <span class="vc-chex">${rgbHex(col.rgb)}</span>
-                <select class="vc-op" data-idx="${i}">${opts}</select>
-                <button class="vc-roweye${off}" data-idx="${i}" title="Show / hide in preview">👁</button>
+                ${mergeBtn}
+                <button class="vc-roweye${off}" data-idx="${i}" title="Hidden colours are not added to the canvas">👁</button>
             </div>`;
         }).join('');
 
-    list.querySelectorAll('.vc-op').forEach(sel => sel.onchange = () => { w.assignments[+sel.dataset.idx] = sel.value; });
-    list.querySelectorAll('.vc-roweye').forEach(btn => btn.onclick = () => {
+    list.querySelectorAll('.vc-roweye').forEach(btn => btn.onclick = (e) => {
+        e.stopPropagation();
         const i = +btn.dataset.idx; w.hidden[i] = !w.hidden[i];
         btn.classList.toggle('off', !!w.hidden[i]); drawWizPreview();
+    });
+    list.querySelectorAll('.vc-mergeup').forEach(btn => btn.onclick = (e) => {
+        e.stopPropagation(); mergeIntoAbove(+btn.dataset.idx);
+    });
+    // click row → highlight that colour in the preview (click again to clear)
+    list.querySelectorAll('.vc-crow').forEach(row => {
+        row.onclick = () => {
+            const i = +row.dataset.idx;
+            w.selected = w.selected === i ? null : i;
+            list.querySelectorAll('.vc-crow').forEach(r => r.classList.toggle('sel', +r.dataset.idx === w.selected));
+            drawWizPreview();
+        };
+        // drag to reorder (insert order / z-order on the canvas)
+        row.ondragstart = (ev) => { ev.dataTransfer.setData('text/plain', row.dataset.idx); ev.dataTransfer.effectAllowed = 'move'; };
+        row.ondragover = (ev) => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'move'; };
+        row.ondrop = (ev) => {
+            ev.preventDefault();
+            const from = +ev.dataTransfer.getData('text/plain'), to = +row.dataset.idx;
+            if (isNaN(from) || from === to) return;
+            const C = w.skel.colors;
+            const [moved] = C.splice(from, 1); C.splice(to, 0, moved);
+            // remap hidden/selected to follow the moved rows
+            const hid = {};
+            const map = (n) => { if (n === from) return to; if (from < to) return (n > from && n <= to) ? n - 1 : n; return (n >= to && n < from) ? n + 1 : n; };
+            Object.keys(w.hidden).forEach(k => { hid[map(+k)] = w.hidden[k]; });
+            w.hidden = hid;
+            if (w.selected != null) w.selected = map(w.selected);
+            renderReview();
+        };
     });
 
     // reflect settings state
@@ -2252,12 +2278,15 @@ function renderReview() {
     const setTxt = (id, t) => { const e = document.getElementById(id); if (e) e.textContent = t; };
     setVal('wizAcc', Math.round(w.accuracy * 100)); setTxt('vcAccVal', Math.round(w.accuracy * 100) + '%');
     setVal('wizSimp', Math.round(w.simplify * 100)); setTxt('vcSimpVal', Math.round(w.simplify * 100) + '%');
-    setVal('vcMinLen', w.minLen); setTxt('vcMinLenVal', w.minLen + ' px');
-    setVal('vcMergeTol', w.mergeTol); setTxt('vcMergeVal', w.mergeTol + '%');
+    setVal('vcMinLen', w.minLen); setTxt('vcMinLenVal', w.minLen > 0 ? w.minLen + ' px' : 'Off');
     setVal('vcCorner', Math.round(w.cornerSharp * 100)); setTxt('vcCornerVal', Math.round(w.cornerSharp * 100) + '%');
     setVal('vcHueTol', w.hueTolDeg); setTxt('vcHueTolVal', w.hueTolDeg + '°');
-    const dn = document.getElementById('vcDenoise'); if (dn) dn.checked = !!w.denoise;
-    const cl = document.getElementById('vcCloseLoops'); if (cl) cl.checked = !!w.closeLoops;
+    // Skeletonize toggle + dependent settings: outlines are always closed loops
+    const sk = document.getElementById('vcSkeletonize'); if (sk) sk.checked = !!w.skeletonize;
+    const hint = document.getElementById('vcSkelHint');
+    if (hint) hint.textContent = w.skeletonize ? 'centerline of each stroke' : 'off — outlines of solid fills';
+    const cl = document.getElementById('vcCloseLoops');
+    if (cl) { cl.checked = w.skeletonize ? !!w.closeLoops : true; cl.disabled = !w.skeletonize; }
     document.querySelectorAll('#vcModeOverlay,#vcModeVector').forEach(b => b.classList.remove('active'));
     document.getElementById(w.overlay ? 'vcModeOverlay' : 'vcModeVector')?.classList.add('active');
 
@@ -2291,11 +2320,16 @@ function drawWizPreview() {
     if (_wiz.skel) {
         ctx.save(); ctx.translate(ox, oy); ctx.scale(s, s);
         ctx.lineWidth = 1.8 / s; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        const sel = _wiz.selected;
         _wiz.skel.colors.forEach((col, i) => {
             if (_wiz.hidden && _wiz.hidden[i]) return;
+            // Row selection highlight: chosen colour full strength, others faded
+            ctx.globalAlpha = sel == null ? 1 : (i === sel ? 1 : 0.12);
+            ctx.lineWidth = (sel === i ? 2.6 : 1.8) / s;
             ctx.strokeStyle = `rgb(${col.rgb.join(',')})`;
             for (const d of (col.paths || [])) { try { ctx.stroke(new Path2D(d)); } catch (e) {} }
         });
+        ctx.globalAlpha = 1;
         ctx.restore();
     }
     const pct = document.getElementById('vcZoomPct'); if (pct) pct.textContent = Math.round(_wiz.view.z * 100) + '%';
@@ -2352,7 +2386,7 @@ function attachPreviewControls(cv, opts = {}) {
             const tc = tmp.getContext('2d'); tc.drawImage(img, sx, sy, 1, 1, 0, 0, 1, 1);
             const d = tc.getImageData(0, 0, 1, 1).data;
             _wiz.bg = [d[0], d[1], d[2]]; _wiz.eyedrop = false;
-            reanalyzeWiz(); renderReview(); renderCropColours();
+            reanalyzeWiz(); renderReview();
         };
     }
 }
@@ -2360,11 +2394,10 @@ function attachPreviewControls(cv, opts = {}) {
 
 function wizInsert() {
     const w = _wiz; if (!w || !w.skel) return;
+    // Visible colours → inserted as Draw (operation is chosen later in Design);
+    // hidden (eye off) colours → skipped entirely.
     const assignments = {};
-    w.skel.colors.forEach((col, i) => {
-        const op = w.assignments[i] || _lastOpForColor[rgbHex(col.rgb)] || 'draw';
-        assignments[i] = op; _lastOpForColor[rgbHex(col.rgb)] = op;
-    });
+    w.skel.colors.forEach((col, i) => { assignments[i] = w.hidden[i] ? 'ignore' : 'draw'; });
     canvasEditor.importSVG(buildSVG(w.skel, assignments));
     if (_extractFlat) {
         const bedW = canvasEditor.view?.bedW || 960, bedH = canvasEditor.view?.bedH || 770;
@@ -2386,10 +2419,10 @@ function wizInsert() {
 
 document.getElementById('visionPaperSize')?.addEventListener('change', (e) => {
     document.getElementById('visionCustomSize').style.display = e.target.value === 'custom' ? 'flex' : 'none';
-    _cropDirty = true; scheduleCropDetect();
+    _cropDirty = true;   // re-analysed on Continue (keep interaction unblocked)
 });
-document.getElementById('visionPaperW')?.addEventListener('change', () => { _cropDirty = true; scheduleCropDetect(); });
-document.getElementById('visionPaperH')?.addEventListener('change', () => { _cropDirty = true; scheduleCropDetect(); });
+document.getElementById('visionPaperW')?.addEventListener('change', () => { _cropDirty = true; });
+document.getElementById('visionPaperH')?.addEventListener('change', () => { _cropDirty = true; });
 
 // Phase 2 → 3: (re)detect if crop changed, then advance to Review.
 document.getElementById('btnVisionContinue')?.addEventListener('click', () => {
@@ -2461,16 +2494,9 @@ document.getElementById('wizSimp')?.addEventListener('input', (e) => {
 });
 document.getElementById('vcMinLen')?.addEventListener('input', (e) => {
     if (!_wiz) return; _wiz.minLen = +e.target.value;
-    document.getElementById('vcMinLenVal').textContent = e.target.value + ' px';
+    document.getElementById('vcMinLenVal').textContent = _wiz.minLen > 0 ? _wiz.minLen + ' px' : 'Off';
 });
 document.getElementById('vcMinLen')?.addEventListener('change', _liveRefine);
-document.getElementById('vcMergeTol')?.addEventListener('input', (e) => {
-    if (!_wiz) return; _wiz.mergeTol = +e.target.value;
-    document.getElementById('vcMergeVal').textContent = e.target.value + '%';
-});
-document.getElementById('vcDenoise')?.addEventListener('change', (e) => {
-    if (!_wiz) return; _wiz.denoise = e.target.checked; _liveRefine();
-});
 document.getElementById('vcCorner')?.addEventListener('input', (e) => {
     if (!_wiz) return; _wiz.cornerSharp = e.target.value / 100;
     document.getElementById('vcCornerVal').textContent = e.target.value + '%'; _liveRefine();
@@ -2484,9 +2510,14 @@ document.getElementById('vcHueTol')?.addEventListener('input', (e) => {
 });
 // Re-clustering is the heavy pass — run it on release, not every input tick.
 document.getElementById('vcHueTol')?.addEventListener('change', () => {
-    if (!_wiz) return; reanalyzeWiz(); renderCropColours(); renderReview();
+    if (!_wiz) return; reanalyzeWiz(); renderReview();
 });
-document.getElementById('vcMergeSimilar')?.addEventListener('click', mergeSimilarColours);
+// Skeletonize toggle: ON = centerline of each pen stroke (default); OFF = trace
+// the outlines of solid/filled shapes instead. Light pass — instant switch.
+document.getElementById('vcSkeletonize')?.addEventListener('change', (e) => {
+    if (!_wiz) return; _wiz.skeletonize = e.target.checked;
+    recompute(); renderReview();
+});
 
 // Upload a saved image straight from the PC (same detect → crop → flatten flow)
 document.getElementById('btnVisionUpload')?.addEventListener('click', () => {

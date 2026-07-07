@@ -38,17 +38,21 @@ function rgbToLab(r, g, b) {
 function deltaE(a, b) { const dl = a[0] - b[0], da = a[1] - b[1], db = a[2] - b[2]; return Math.sqrt(dl * dl + da * da + db * db); }
 
 // ── display names (cosmetic only — masking always uses measured color) ─────
-const NAMED = [
-    ['black', 20, 20, 20], ['white', 245, 245, 245], ['gray', 130, 130, 130],
-    ['red', 220, 40, 40], ['orange', 240, 140, 30], ['yellow', 240, 220, 40],
-    ['green', 40, 170, 70], ['teal', 30, 170, 160], ['blue', 40, 90, 210],
-    ['purple', 140, 60, 190], ['pink', 235, 100, 170], ['brown', 140, 90, 50],
-];
-const NAMED_LAB = NAMED.map(n => ({ name: n[0], lab: rgbToLab(n[1], n[2], n[3]) }));
+// Named by HUE, not nearest-swatch ΔE: photographed ink is dimmer/desaturated
+// than a reference swatch, so ΔE matching mislabels (dull orange → "brown",
+// pale green → "gray"). Hue survives desaturation, so it names correctly.
 function nearestName(lab) {
-    let best = Infinity, name = 'ink';
-    for (const c of NAMED_LAB) { const d = deltaE(lab, c.lab); if (d < best) { best = d; name = c.name; } }
-    return name;
+    const [L, a, b] = lab;
+    const chroma = Math.hypot(a, b);
+    if (chroma < 10) return L < 30 ? 'black' : L > 80 ? 'white' : 'gray';
+    let h = Math.atan2(b, a) * 180 / Math.PI; if (h < 0) h += 360;
+    if (h < 45 || h >= 335) return (L > 62 && chroma < 60) ? 'pink' : 'red';
+    if (h < 80)  return L < 40 ? 'brown' : 'orange';
+    if (h < 115) return 'yellow';
+    if (h < 160) return 'green';
+    if (h < 215) return 'teal';
+    if (h < 300) return 'blue';
+    return 'purple';
 }
 
 // ── geometry: dedupe + RDP simplify + Catmull-Rom smoothing ────────────────
@@ -228,6 +232,42 @@ function _erode(mask, w, h, r) {
 // centerline per stroke instead of a doubled "ladder" along a thick band.
 function _closeMask(mask, w, h, r) { return _erode(_dilate(mask, w, h, r), w, h, r); }
 
+// Stroke half-width estimate via a two-pass chamfer distance transform: the
+// 90th-percentile distance of ink pixels to the background ≈ half the pen's
+// drawn thickness. Drives an ADAPTIVE close radius — a thick marker needs a
+// large close to weld its hollow core (else doubled traces), while fine
+// handwriting needs a tiny one (else letters blob together).
+function _strokeHalfWidth(mask, w, h) {
+    const N = w * h, INF = 1e7;
+    const d = new Float32Array(N);
+    for (let i = 0; i < N; i++) d[i] = mask[i] ? INF : 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x; if (!d[i]) continue; let m = d[i];
+        if (x > 0) m = Math.min(m, d[i - 1] + 1);
+        if (y > 0) {
+            m = Math.min(m, d[i - w] + 1);
+            if (x > 0) m = Math.min(m, d[i - w - 1] + 1.414);
+            if (x < w - 1) m = Math.min(m, d[i - w + 1] + 1.414);
+        }
+        d[i] = m;
+    }
+    for (let y = h - 1; y >= 0; y--) for (let x = w - 1; x >= 0; x--) {
+        const i = y * w + x; if (!d[i]) continue; let m = d[i];
+        if (x < w - 1) m = Math.min(m, d[i + 1] + 1);
+        if (y < h - 1) {
+            m = Math.min(m, d[i + w] + 1);
+            if (x < w - 1) m = Math.min(m, d[i + w + 1] + 1.414);
+            if (x > 0) m = Math.min(m, d[i + w - 1] + 1.414);
+        }
+        d[i] = m;
+    }
+    const vals = [];
+    for (let i = 0; i < N; i++) if (mask[i]) vals.push(d[i]);
+    if (!vals.length) return 1;
+    vals.sort((a, b) => a - b);
+    return vals[Math.floor(vals.length * 0.9)];
+}
+
 // ── Heavy pass: substrate → ink mask → colour clusters → raw skeleton polylines.
 // opts.bg = [r,g,b] substrate override. Returns a result carrying per-colour raw
 // polylines + binary mask so the cheap refine pass can re-run on slider changes.
@@ -354,20 +394,33 @@ export function analyzeSkeletons(sourceCanvas, paperW, paperH, opts = {}) {
         const mask = new Uint8Array(N);
         for (let i = 0; i < N; i++) if (assign[i] === c) mask[i] = 1;
         // Close the band to fill hollow/streaky cores → single centerline on thinning.
-        // Radius scales with the working raster so it works at any capture resolution.
-        const closeR = Math.max(1, Math.round(Math.min(w, h) / 260));
+        // ADAPTIVE radius from this colour's measured stroke width: thick marker →
+        // big close (no doubled traces); fine pen/handwriting → tiny close (no blobbing).
+        const halfW = _strokeHalfWidth(mask, w, h);
+        const closeR = Math.max(1, Math.min(10, Math.round(halfW * 0.8)));
         const clean = _closeMask(mask, w, h, closeR);
 
-        const mc = document.createElement('canvas'); mc.width = w; mc.height = h;
-        const mx = mc.getContext('2d'); const md = mx.createImageData(w, h);
-        for (let i = 0; i < N; i++) { const on = clean[i] ? 255 : 0; const j = i * 4; md.data[j] = on; md.data[j + 1] = on; md.data[j + 2] = on; md.data[j + 3] = 255; }
-        mx.putImageData(md, 0, 0);
+        const traceMask = (m) => {
+            const mc = document.createElement('canvas'); mc.width = w; mc.height = h;
+            const mx = mc.getContext('2d'); const md = mx.createImageData(w, h);
+            for (let i = 0; i < N; i++) { const on = m[i] ? 255 : 0; const j = i * 4; md.data[j] = on; md.data[j + 1] = on; md.data[j + 2] = on; md.data[j + 3] = 255; }
+            mx.putImageData(md, 0, 0);
+            return (window.TraceSkeleton.fromCanvas(mc).polylines || []).filter(p => p.length >= 8);
+        };
 
-        const res = window.TraceSkeleton.fromCanvas(mc);
-        // keep the closed mask for endpoint recovery; drop very short spur polylines
-        const rawPolys = (res.polylines || []).filter(p => p.length >= 8);
+        // Centerline polylines (skeletonize ON — pen strokes traced down the middle)
+        const rawPolys = traceMask(clean);
         if (!rawPolys.length) continue;
-        colors.push({ rgb, name: nearestName(rgbToLab(rgb[0], rgb[1], rgb[2])), count: counts[c], rawPolys, mask: clean });
+
+        // Outline polylines (skeletonize OFF — solid fills traced around the edge).
+        // The 1px boundary ring (mask − eroded mask) skeletonizes to exactly the
+        // contour loop, outer edges and holes alike.
+        const er1 = _erode(clean, w, h, 1);
+        const ring = new Uint8Array(N);
+        for (let i = 0; i < N; i++) ring[i] = clean[i] && !er1[i] ? 1 : 0;
+        const outlinePolys = traceMask(ring);
+
+        colors.push({ rgb, name: nearestName(rgbToLab(rgb[0], rgb[1], rgb[2])), count: counts[c], rawPolys, outlinePolys, mask: clean });
     }
     colors.sort((a, b) => b.count - a.count);
     return { w, h, paperW, paperH, bgRgb, colors };
@@ -380,16 +433,17 @@ export function refinePaths(skel, opts = {}) {
     const accuracy = opts.accuracy != null ? opts.accuracy : 0.5;
     const simp = opts.simplify != null ? opts.simplify : 0.4;
     const cornerSharp = opts.cornerSharp != null ? opts.cornerSharp : 0;   // 0..1 crisper corners
-    const closeLoops = opts.closeLoops !== false;                          // snap near-closed loops shut
+    const outline = !!opts.outline;                 // skeletonize OFF → contour loops
+    const closeLoops = outline || opts.closeLoops !== false;               // outlines are always loops
     const epsScale = 0.4 + simp * 3.0;              // 0.4 → ~3.4×
     const tension = (1 - accuracy) * 0.95;          // accurate → ~0 (crisp), smooth → ~0.95
     const maxExt = Math.round(2 + (1 - accuracy) * 4); // extend endpoints a touch more when smoothing
     // A knife/crease loop with a tiny seam gap leaves an uncut tab — snap endpoints
     // within ~a stroke-width of each other and emit one closed contour instead.
-    const loopTol = Math.max(4, Math.min(skel.w, skel.h) / 180);
+    const loopTol = outline ? Math.max(8, Math.min(skel.w, skel.h) / 90) : Math.max(4, Math.min(skel.w, skel.h) / 180);
     for (const col of skel.colors) {
         const paths = [];
-        for (const poly of col.rawPolys) {
+        for (const poly of (outline ? (col.outlinePolys || []) : col.rawPolys)) {
             let s = simplify(poly, epsScale);
             if (s.length < 2) continue;
             const endGap = Math.hypot(s[0].x - s[s.length - 1].x, s[0].y - s[s.length - 1].y);

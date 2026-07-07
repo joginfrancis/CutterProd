@@ -2995,8 +2995,22 @@ body .btn-action { /* Specificity override */
 .vc-chip-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 .vc-colourlist { display: flex; flex-direction: column; }
-.vc-crow { display: flex; align-items: center; gap: 0.55rem; padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+.vc-crow { display: flex; align-items: center; gap: 0.55rem; padding: 0.5rem 0.35rem; border-bottom: 1px solid var(--border); cursor: pointer; border-radius: 8px; transition: background 0.12s; }
 .vc-crow:last-child { border-bottom: none; }
+.vc-crow:hover { background: #f8fafc; }
+.vc-crow.sel { background: var(--accent-glow); box-shadow: inset 2px 0 0 var(--accent); }
+.vc-crow[draggable="true"] { user-select: none; }
+.vc-mergeup {
+    padding: 0.2rem 0.5rem; border: 1px solid var(--border); border-radius: 999px;
+    background: #fff; color: var(--text-muted); font-size: 0.66rem; font-weight: 600;
+    cursor: pointer; white-space: nowrap; transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.vc-mergeup:hover { border-color: var(--accent); color: var(--accent); }
+/* machine RECOMMENDS this merge (similar to the row above) — user still decides */
+.vc-mergeup.rec { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
+.vc-list-hint { margin-top: 0.5rem; font-size: 0.68rem; color: var(--text-muted); line-height: 1.4; }
+.vc-mode-hint { font-weight: 500; color: var(--text-muted); margin-left: 0.4rem; font-size: 0.72rem; }
+.vc-paper-row { display: flex; align-items: center; gap: 0.8rem; flex: 0 0 auto; }
 .vc-crow .vc-cname { font-size: 0.82rem; }
 .vc-op { padding: 0.3rem 0.4rem; border-radius: 7px; border: 1px solid var(--border); background: #f8fafc; font-size: 0.72rem; font-weight: 600; color: var(--text-main); cursor: pointer; }
 .vc-op:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }

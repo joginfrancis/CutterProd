@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UrumiCutter V2 - Control Dashboard</title>
-    <link rel="stylesheet" href="styles.css?v=23">
+    <link rel="stylesheet" href="styles.css?v=24">
     <!-- Google Font for Outfit and Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -692,30 +692,21 @@
                         <span><b>Drag the corners to adjust.</b> Make sure the entire page is inside the crop.</span>
                     </div>
 
-                    <div class="vc-detectgrid">
-                        <div class="vc-card">
-                            <div class="vc-card-title">Detected colours <span id="vcCropColourCount" class="vc-count"></span></div>
-                            <div id="vcCropColours" class="vc-cropcolours"><div class="vc-muted">Detecting…</div></div>
-                            <div class="vc-bgrow">
-                                <span class="vc-bg-swatch" id="vcCropBgSwatch"></span>
-                                <span class="vc-bg-txt">Background <span class="vc-mono">(paper)</span> <b id="vcCropBgHex">—</b></span>
-                            </div>
-                        </div>
-                        <div class="vc-side">
-                            <div class="vc-card">
-                                <div class="vc-card-title">Paper size</div>
-                                <select id="visionPaperSize" class="vc-select">
-                                    <option value="A4">A4 – 210 × 297 mm</option>
-                                    <option value="A3">A3 – 297 × 420 mm</option>
-                                    <option value="A5">A5 – 148 × 210 mm</option>
-                                    <option value="Letter">Letter – 216 × 279 mm</option>
-                                    <option value="custom">Custom…</option>
-                                </select>
-                                <div id="visionCustomSize" class="vision-custom-size">
-                                    <input type="number" id="visionPaperW" value="210" min="10" step="1"> ×
-                                    <input type="number" id="visionPaperH" value="297" min="10" step="1"> mm
-                                </div>
-                            </div>
+                    <!-- Colour detection happens AFTER flatten (Review phase) — analysing
+                         the unflattened photo gives false colours, and keeping this phase
+                         light leaves the main thread free for smooth corner dragging. -->
+                    <div class="vc-paper-row vc-card">
+                        <span class="vc-card-title" style="margin:0;">Paper size</span>
+                        <select id="visionPaperSize" class="vc-select" style="width:auto; flex:0 0 auto; min-width:220px;">
+                            <option value="A4">A4 – 210 × 297 mm</option>
+                            <option value="A3">A3 – 297 × 420 mm</option>
+                            <option value="A5">A5 – 148 × 210 mm</option>
+                            <option value="Letter">Letter – 216 × 279 mm</option>
+                            <option value="custom">Custom…</option>
+                        </select>
+                        <div id="visionCustomSize" class="vision-custom-size" style="margin-top:0;">
+                            <input type="number" id="visionPaperW" value="210" min="10" step="1"> ×
+                            <input type="number" id="visionPaperH" value="297" min="10" step="1"> mm
                         </div>
                     </div>
 
@@ -748,9 +739,15 @@
                             <div class="vc-card">
                                 <div class="vc-card-title-row">
                                     <span>Detected colours <span id="vcRevColourCount" class="vc-count"></span></span>
-                                    <button id="vcMergeSimilar" class="vc-chip-btn">Merge similar</button>
                                 </div>
                                 <div id="vcColourList" class="vc-colourlist"></div>
+                                <div class="vc-list-hint">Click a colour to highlight it · drag to reorder · hidden colours are not added</div>
+                            </div>
+                            <div class="vc-card">
+                                <div class="vc-toggle-row">
+                                    <span>Skeletonize <small class="vc-mode-hint" id="vcSkelHint">centerline of each stroke</small></span>
+                                    <label class="vc-switch"><input type="checkbox" id="vcSkeletonize" checked><span></span></label>
+                                </div>
                             </div>
                             <div class="vc-card">
                                 <button id="vcSettingsToggle" class="vc-card-title-row vc-adv-toggle">
@@ -784,19 +781,10 @@
                                         <input type="range" id="vcHueTol" min="8" max="60" value="18">
                                         <div class="vc-set-ends"><span>Keep close hues apart</span><span>Merge shades</span></div>
                                     </div>
-                                    <div class="vc-toggle-row">
-                                        <span>Remove small noise</span>
-                                        <label class="vc-switch"><input type="checkbox" id="vcDenoise" checked><span></span></label>
-                                    </div>
                                     <div class="vc-set">
-                                        <div class="vc-set-toprow"><span class="vc-set-label">Ignore strokes shorter than</span><span class="vc-set-val" id="vcMinLenVal">2 px</span></div>
+                                        <div class="vc-set-toprow"><span class="vc-set-label">Remove small noise</span><span class="vc-set-val" id="vcMinLenVal">2 px</span></div>
                                         <input type="range" id="vcMinLen" min="0" max="10" value="2">
-                                        <div class="vc-set-ends"><span>0 px</span><span>10 px</span></div>
-                                    </div>
-                                    <div class="vc-set">
-                                        <div class="vc-set-toprow"><span class="vc-set-label">Merge similar colours</span><span class="vc-set-val" id="vcMergeVal">40%</span></div>
-                                        <input type="range" id="vcMergeTol" min="0" max="100" value="40">
-                                        <div class="vc-set-ends"><span>Low</span><span>High</span></div>
+                                        <div class="vc-set-ends"><span>Off</span><span>Drop strokes &lt; 10 px</span></div>
                                     </div>
                                 </div>
                             </div>
@@ -819,7 +807,7 @@
     <!-- SCRIPTS -->
     <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="trace_skeleton.js"></script>
-    <script type="module" src="script.js?v=52"></script>
+    <script type="module" src="script.js?v=56"></script>
 
 </body>
 </html>
