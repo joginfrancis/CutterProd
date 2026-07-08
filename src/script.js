@@ -37,7 +37,7 @@ import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
 import { CanvasEditor } from './CanvasEditor.js?v=12';
-import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG, splitColor } from './DrawingVectorizer.js?v=22';
+import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG, splitColor } from './DrawingVectorizer.js?v=23';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**

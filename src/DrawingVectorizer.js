@@ -246,7 +246,10 @@ function _traceMask(m, w, h) {
 function _buildColorGeom(mask, w, h) {
     const N = w * h;
     const halfW = _strokeHalfWidth(mask, w, h);
-    const closeR = Math.max(1, Math.min(10, Math.round(halfW * 0.8)));
+    // Close radius bridges hollow cores AND small dry-marker gaps along the stroke
+    // (~2×radius). Scaled to stroke width so it welds a streaky line back together
+    // without merging separate fine strokes; capped so thick markers don't bloat.
+    const closeR = Math.max(1, Math.min(10, Math.round(halfW * 1.3)));
     const clean = _closeMask(mask, w, h, closeR);
     const rawPolys = _traceMask(clean, w, h);
     const er1 = _erode(clean, w, h, 1);
