@@ -37,7 +37,7 @@ import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js?v=5';
 import { CanvasEditor } from './CanvasEditor.js?v=12';
-import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG, splitColor } from './DrawingVectorizer.js?v=21';
+import { estimateSubstrate, analyzeSkeletons, refinePaths, buildSVG, splitColor } from './DrawingVectorizer.js?v=22';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -2156,7 +2156,7 @@ function detectColours(cb) {
                     accuracy: p.accuracy ?? 0.5, simplify: p.simplify ?? 0.4,
                     cornerSharp: p.cornerSharp ?? 0.4, closeLoops: p.closeLoops ?? true,
                     hueTolDeg: p.hueTolDeg ?? 18,
-                    minLen: p.minLen ?? 2, bridgeGap: p.bridgeGap ?? 14,
+                    minLen: p.minLen ?? 2, bridgeGap: p.bridgeGap ?? 20,
                     skeletonize: p.skeletonize ?? true, addFrame: p.addFrame ?? false,
                     preset: p.preset ?? 'moderate',
                     overlay: p.overlay ?? true, hidden: {}, selected: null,

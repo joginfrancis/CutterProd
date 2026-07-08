@@ -252,7 +252,7 @@ function _buildColorGeom(mask, w, h) {
     const er1 = _erode(clean, w, h, 1);
     const ring = new Uint8Array(N);
     for (let i = 0; i < N; i++) ring[i] = clean[i] && !er1[i] ? 1 : 0;
-    return { rawPolys, outlinePolys: _traceMask(ring, w, h), mask: clean };
+    return { rawPolys, outlinePolys: _traceMask(ring, w, h), mask: clean, halfW };
 }
 
 // Stroke half-width estimate via a two-pass chamfer distance transform: the
@@ -429,12 +429,20 @@ export function analyzeSkeletons(sourceCanvas, paperW, paperH, opts = {}) {
 
 // Unit tangent pointing along a→b.
 function _tan(a, b) { const dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy) || 1; return { x: dx / l, y: dy / l }; }
+function _polyLen(s) { let L = 0; for (let i = 1; i < s.length; i++) L += Math.hypot(s[i].x - s[i - 1].x, s[i].y - s[i - 1].y); return L; }
 // Greedily rejoin polyline ends that are close AND collinear — reconnects a
 // stroke that skeletonized into pieces because another colour crossed over it.
 // Sharp real corners (low collinearity) are left alone. maxGap in working px.
 function bridgePolylines(polys, maxGap, minCos) {
     let segs = polys.filter(p => p.length >= 2).map(p => p.slice());
-    const outDir = (seg, atEnd) => atEnd ? _tan(seg[seg.length - 2], seg[seg.length - 1]) : _tan(seg[1], seg[0]);
+    // Tangent taken over a look-back SPAN (≈gap), not the last 2 points, so a small
+    // hook the skeleton bends into at the junction doesn't fool the collinearity test.
+    const span = Math.max(6, maxGap);
+    const outDir = (seg, atEnd) => {
+        const n = seg.length;
+        if (atEnd) { const e = seg[n - 1]; let k = n - 2; while (k > 0 && Math.hypot(seg[k].x - e.x, seg[k].y - e.y) < span) k--; return _tan(seg[k], e); }
+        const e = seg[0]; let k = 1; while (k < n - 1 && Math.hypot(seg[k].x - e.x, seg[k].y - e.y) < span) k++; return _tan(seg[k], e);
+    };
     let changed = true;
     while (changed && segs.length > 1) {
         changed = false;
@@ -555,7 +563,15 @@ export function refinePaths(skel, opts = {}) {
             }
         }
         // Reconnect crossing-broken strokes (centerline mode only; outlines are loops)
-        if (bridge > 0 && !outline) segs = bridgePolylines(segs, bridge, 0.55);
+        if (bridge > 0 && !outline) segs = bridgePolylines(segs, bridge, 0.5);
+        // Prune junction spurs: tiny dangling branches the thinning leaves at every
+        // T/X junction (the "whiskers"). Scaled to stroke width, capped so real short
+        // marks on thick pens survive. Loops are long and unaffected.
+        if (!outline) {
+            const strokeW = col.halfW ? col.halfW * 2 : 4;
+            const spurLen = Math.min(16, Math.max(5, strokeW * 1.1));
+            segs = segs.filter(s => _polyLen(s) >= spurLen);
+        }
         const paths = [];
         for (let s of segs) {
             const endGap = Math.hypot(s[0].x - s[s.length - 1].x, s[0].y - s[s.length - 1].y);
