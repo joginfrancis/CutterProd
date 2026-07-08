@@ -133,6 +133,136 @@ function toPathD(pts, tension = 0.9, cornerSharp = 0, closed = false) {
     return d;
 }
 
+// ── Schneider least-squares cubic Bézier fit (Graphics Gems) ─────────────────
+// Fits the FEWEST cubics that stay within `tol` px of the points — far fewer
+// control nodes + cleaner handles than one-cubic-per-point Catmull-Rom, so the
+// SVG is lighter and nicer to edit. Corners are handled by the caller, which
+// splits the polyline at sharp vertices and fits each smooth run independently.
+function _v(a, b) { return { x: b.x - a.x, y: b.y - a.y }; }
+function _norm(v) { const l = Math.hypot(v.x, v.y) || 1; return { x: v.x / l, y: v.y / l }; }
+function _dot(a, b) { return a.x * b.x + a.y * b.y; }
+function _b0(t){const u=1-t;return u*u*u;} function _b1(t){const u=1-t;return 3*u*u*t;}
+function _b2(t){const u=1-t;return 3*u*t*t;} function _b3(t){return t*t*t;}
+function _bezPt(bz, t) {
+    const u = 1 - t;
+    return {
+        x: u*u*u*bz[0].x + 3*u*u*t*bz[1].x + 3*u*t*t*bz[2].x + t*t*t*bz[3].x,
+        y: u*u*u*bz[0].y + 3*u*u*t*bz[1].y + 3*u*t*t*bz[2].y + t*t*t*bz[3].y,
+    };
+}
+function _chordParam(pts, s, e) {
+    const u = [0];
+    for (let i = s + 1; i <= e; i++) u.push(u[u.length - 1] + Math.hypot(pts[i].x - pts[i-1].x, pts[i].y - pts[i-1].y));
+    const total = u[u.length - 1] || 1;
+    for (let i = 0; i < u.length; i++) u[i] /= total;
+    return u;
+}
+function _genBezier(pts, s, e, u, tan1, tan2) {
+    const n = e - s + 1;
+    const A = [];
+    for (let i = 0; i < n; i++) {
+        A.push([{ x: tan1.x * _b1(u[i]), y: tan1.y * _b1(u[i]) }, { x: tan2.x * _b2(u[i]), y: tan2.y * _b2(u[i]) }]);
+    }
+    let c00=0,c01=0,c11=0,x0=0,x1=0;
+    const p0 = pts[s], p3 = pts[e];
+    for (let i = 0; i < n; i++) {
+        c00 += _dot(A[i][0], A[i][0]); c01 += _dot(A[i][0], A[i][1]); c11 += _dot(A[i][1], A[i][1]);
+        const t = u[i];
+        const tmp = { x: pts[s+i].x - (_b0(t)*p0.x + _b1(t)*p0.x + _b2(t)*p3.x + _b3(t)*p3.x),
+                      y: pts[s+i].y - (_b0(t)*p0.y + _b1(t)*p0.y + _b2(t)*p3.y + _b3(t)*p3.y) };
+        x0 += _dot(A[i][0], tmp); x1 += _dot(A[i][1], tmp);
+    }
+    const det = c00*c11 - c01*c01;
+    let a1, a2;
+    if (Math.abs(det) < 1e-12) {
+        const segL = Math.hypot(p3.x - p0.x, p3.y - p0.y) / 3;
+        a1 = segL; a2 = segL;
+    } else {
+        a1 = (x0*c11 - x1*c01) / det; a2 = (c00*x1 - c01*x0) / det;
+    }
+    const segL = Math.hypot(p3.x - p0.x, p3.y - p0.y);
+    if (a1 < 1e-6 || a2 < 1e-6) { a1 = segL/3; a2 = segL/3; }
+    return [p0, { x: p0.x + tan1.x*a1, y: p0.y + tan1.y*a1 }, { x: p3.x + tan2.x*a2, y: p3.y + tan2.y*a2 }, p3];
+}
+function _maxError(pts, s, e, bz, u) {
+    let max = 0, split = ((s + e) / 2) | 0;
+    for (let i = s + 1; i < e; i++) {
+        const p = _bezPt(bz, u[i - s]);
+        const d = (p.x - pts[i].x) ** 2 + (p.y - pts[i].y) ** 2;
+        if (d > max) { max = d; split = i; }
+    }
+    return { err: Math.sqrt(max), split };
+}
+function _fitCubic(pts, s, e, tan1, tan2, tol, out, depth) {
+    if (e - s === 1) {
+        const d = Math.hypot(pts[e].x - pts[s].x, pts[e].y - pts[s].y) / 3;
+        out.push([pts[s], { x: pts[s].x + tan1.x*d, y: pts[s].y + tan1.y*d }, { x: pts[e].x + tan2.x*d, y: pts[e].y + tan2.y*d }, pts[e]]);
+        return;
+    }
+    const u = _chordParam(pts, s, e);
+    const bz = _genBezier(pts, s, e, u, tan1, tan2);
+    const { err, split } = _maxError(pts, s, e, bz, u);
+    if (err < tol || depth > 16) { out.push(bz); return; }       // within tol → done (depth guard)
+    const sp = Math.max(s + 1, Math.min(e - 1, split));          // ensure a valid interior split
+    const cen = _norm(_v(pts[sp + 1], pts[sp - 1]));             // tangent at split (smooth)
+    _fitCubic(pts, s, sp, tan1, cen, tol, out, depth + 1);
+    _fitCubic(pts, sp, e, { x: -cen.x, y: -cen.y }, tan2, tol, out, depth + 1);
+}
+// Fit one smooth (corner-free) run of points → array of cubic segments.
+function _fitRun(pts, tol) {
+    if (pts.length < 2) return [];
+    if (pts.length === 2) {
+        const d = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) / 3;
+        const t = _norm(_v(pts[0], pts[1]));
+        return [[pts[0], { x: pts[0].x + t.x*d, y: pts[0].y + t.y*d }, { x: pts[1].x - t.x*d, y: pts[1].y - t.y*d }, pts[1]]];
+    }
+    const out = [];
+    _fitCubic(pts, 0, pts.length - 1, _norm(_v(pts[0], pts[1])), _norm(_v(pts[pts.length-1], pts[pts.length-2])), tol, out, 0);
+    return out;
+}
+// Build a 'd' string via least-squares fitting, splitting at sharp corners so
+// they stay crisp. tol = fit tolerance (px); cornerCos = straightness below which
+// a vertex is treated as a hard corner (0..1, higher = more corners preserved).
+function toPathFit(pts, tol, cornerCos, closed) {
+    const n = pts.length;
+    if (n < 2) return n ? `M ${num(pts[0].x)},${num(pts[0].y)}` : '';
+    if (n === 2) return `M ${num(pts[0].x)},${num(pts[0].y)} L ${num(pts[1].x)},${num(pts[1].y)}`;
+    // mark corners
+    const isCorner = new Array(n).fill(false);
+    const lo = closed ? 0 : 1, hi = closed ? n : n - 1;
+    for (let i = lo; i < hi; i++) {
+        const a = pts[(i - 1 + n) % n], b = pts[i % n], c = pts[(i + 1) % n];
+        if (straightness(a, b, c) < cornerCos) isCorner[i % n] = true;
+    }
+    // split into runs at corners (and at the start/end for open paths)
+    const runs = [];
+    if (closed) {
+        let start = 0; while (start < n && !isCorner[start]) start++;
+        if (start === n) {                      // no corners → one closed loop
+            const loop = pts.concat([pts[0]]);
+            const segs = _fitRun(loop, tol);
+            return _emit(pts[0], segs, true);
+        }
+        let cur = [pts[start]];
+        for (let k = 1; k <= n; k++) { const idx = (start + k) % n; cur.push(pts[idx]); if (isCorner[idx] && k < n) { runs.push(cur); cur = [pts[idx]]; } }
+        runs.push(cur);
+    } else {
+        let cur = [pts[0]];
+        for (let i = 1; i < n; i++) { cur.push(pts[i]); if (isCorner[i] && i < n - 1) { runs.push(cur); cur = [pts[i]]; } }
+        runs.push(cur);
+    }
+    let all = [];
+    for (const r of runs) all = all.concat(_fitRun(r, tol));
+    return _emit(pts[closed ? 0 : 0], all, closed);
+}
+function _emit(start, segs, closed) {
+    if (!segs.length) return `M ${num(start.x)},${num(start.y)}`;
+    let d = `M ${num(segs[0][0].x)},${num(segs[0][0].y)}`;
+    for (const s of segs) d += ` C ${num(s[1].x)},${num(s[1].y)} ${num(s[2].x)},${num(s[2].y)} ${num(s[3].x)},${num(s[3].y)}`;
+    if (closed) d += ' Z';
+    return d;
+}
+
 // ── k-means++ over Lab samples ─────────────────────────────────────────────
 function kmeans(samples, k, iters = 12) {
     if (samples.length <= k) return samples.map(s => s.slice());
@@ -550,9 +680,13 @@ export function refinePaths(skel, opts = {}) {
     const outline = !!opts.outline;                 // skeletonize OFF → contour loops
     const bridge = opts.bridgeGap != null ? opts.bridgeGap : 0;            // px; 0 = off
     const region = opts.region || null;                                    // keep-inside area
+    const curveFit = opts.curveFit !== false;                              // least-squares Bézier fit
     const closeLoops = outline || opts.closeLoops !== false;               // outlines are always loops
     const epsScale = 0.4 + simp * 3.0;              // 0.4 → ~3.4×
     const tension = (1 - accuracy) * 0.95;          // accurate → ~0 (crisp), smooth → ~0.95
+    // Fit tolerance + corner threshold for the least-squares path (Accurate→tight/more corners).
+    const fitTol = 0.6 + (1 - accuracy) * 4.5;      // ~0.6px (accurate) → ~5px (smooth)
+    const cornerCos = 0.15 + cornerSharp * 0.6;     // higher cornerSharp → preserve gentler bends
     const maxExt = Math.round(2 + (1 - accuracy) * 4); // extend endpoints a touch more when smoothing
     // A knife/crease loop with a tiny seam gap leaves an uncut tab — snap endpoints
     // within ~a stroke-width of each other and emit one closed contour instead.
@@ -587,7 +721,7 @@ export function refinePaths(skel, opts = {}) {
                 s[0] = extendEnd(s[0], s[1], col.mask, skel.w, skel.h, maxExt);
                 s[s.length - 1] = extendEnd(s[s.length - 1], s[s.length - 2], col.mask, skel.w, skel.h, maxExt);
             }
-            paths.push(toPathD(s, tension, cornerSharp, closed));
+            paths.push(curveFit ? toPathFit(s, fitTol, cornerCos, closed) : toPathD(s, tension, cornerSharp, closed));
         }
         col.paths = paths;
     }
